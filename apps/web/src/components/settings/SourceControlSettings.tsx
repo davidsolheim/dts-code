@@ -214,6 +214,10 @@ function itemSummary({
 
   if (auth) {
     if (auth.status === "authenticated") {
+      const aliasName =
+        isProviderDiscoveryItem(item) && item.identityAliasDisplayName
+          ? item.identityAliasDisplayName
+          : null;
       return (
         <>
           <span>Authenticated</span>
@@ -221,6 +225,17 @@ function itemSummary({
             <>
               <span aria-hidden>as</span>
               <RedactedAccount account={authAccount} />
+            </>
+          ) : null}
+          {aliasName ? <span>for this alias</span> : null}
+          {item.executable ? (
+            <>
+              <span aria-hidden>,</span>
+              <span>
+                using{" "}
+                <code className="rounded bg-muted px-1 py-px text-[11px]">{item.executable}</code>{" "}
+                on the server
+              </span>
             </>
           ) : null}
         </>
@@ -282,6 +297,9 @@ function DiscoveryItemRow({
               <SourceControlItemMark item={item} />
               <span className="truncate text-sm font-medium tracking-[-0.005em] text-foreground">
                 {item.label}
+                {isProviderDiscoveryItem(item) && item.identityAliasDisplayName
+                  ? ` · ${item.identityAliasDisplayName}`
+                  : ""}
               </span>
               {version ? <code className="text-xs text-muted-foreground">{version}</code> : null}
               {isVcsNotReady(item) ? (
@@ -568,7 +586,10 @@ export function SourceControlSettingsPanel() {
               headerAction={hasVersionControlSystems ? null : scanButton}
             >
               {result.sourceControlProviders.map((item) => (
-                <DiscoveryItemRow key={`provider:${item.kind}`} item={item} />
+                <DiscoveryItemRow
+                  key={`provider:${item.kind}:${item.identityAliasId ?? "default"}`}
+                  item={item}
+                />
               ))}
             </SettingsSection>
           ) : null}

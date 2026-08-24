@@ -278,7 +278,13 @@ function SwitchRow(props: {
 
 type ThreadSettingsSubmenuPage =
   | { readonly kind: "descriptor"; readonly id: string }
-  | { readonly kind: "runtime" };
+  | { readonly kind: "runtime" }
+  | { readonly kind: "identity" };
+
+type IdentityAliasChoice = {
+  readonly id: string;
+  readonly displayName: string;
+};
 
 type ThreadSettingsSessionProps = {
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -288,6 +294,9 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly identityAliases?: ReadonlyArray<IdentityAliasChoice>;
+  readonly selectedAliasId?: string | null;
+  readonly onUpdateAliasId?: (aliasId: string | null) => void;
 };
 
 export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
@@ -335,6 +344,9 @@ type ThreadSettingsSessionValue = {
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly identityAliases: ReadonlyArray<IdentityAliasChoice>;
+  readonly selectedAliasId: string | null;
+  readonly onUpdateAliasId: ((aliasId: string | null) => void) | undefined;
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly providerExpansionOverrides: ReadonlySet<string>;
   readonly hasLegacyModels: boolean;
@@ -453,6 +465,9 @@ function ThreadSettingsSessionProvider(
       providerGroups: props.providerGroups,
       runtimeMode: props.runtimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      identityAliases: props.identityAliases ?? [],
+      selectedAliasId: props.selectedAliasId ?? null,
+      onUpdateAliasId: props.onUpdateAliasId,
       displayedDescriptors,
       providerExpansionOverrides,
       hasLegacyModels,
@@ -482,6 +497,9 @@ function ThreadSettingsSessionProvider(
       pressModel,
       providerFilter,
       props.onUpdateRuntimeMode,
+      props.identityAliases,
+      props.selectedAliasId,
+      props.onUpdateAliasId,
       props.providerGroups,
       props.runtimeMode,
       searchQuery,
@@ -705,7 +723,7 @@ function ThreadSettingsOptionsItem(props: {
         })}
         <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
           <DisclosureRow
-            isLast
+            isLast={session.identityAliases.length === 0 && session.selectedAliasId === null}
             label="Runtime"
             value={
               RUNTIME_MODE_CHOICES.find((choice) => choice.mode === session.runtimeMode)?.label
@@ -713,6 +731,19 @@ function ThreadSettingsOptionsItem(props: {
             onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
           />
         </Animated.View>
+        {session.identityAliases.length > 0 || session.selectedAliasId !== null ? (
+          <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
+            <DisclosureRow
+              isLast
+              label="Identity"
+              value={
+                session.identityAliases.find((alias) => alias.id === session.selectedAliasId)
+                  ?.displayName ?? (session.selectedAliasId !== null ? "Unknown alias" : "No alias")
+              }
+              onPress={() => props.onOpenSubmenu({ kind: "identity" })}
+            />
+          </Animated.View>
+        ) : null}
       </Animated.View>
 
       {Platform.OS !== "ios" && session.hasLegacyModels ? (
@@ -870,21 +901,48 @@ function ThreadSettingsChoiceContent(props: {
             },
           })),
         }
-      : activeDescriptor?.type === "select"
+      : props.submenu.kind === "identity"
         ? {
-            rows: selectableChoices(activeDescriptor).map((choice) => ({
-              id: choice.id,
-              label: choice.label,
-              description: undefined,
-              selected: choice.id === getProviderOptionCurrentValue(activeDescriptor),
-              onPress: () => {
-                void Haptics.selectionAsync();
-                session.applyOptionChange(activeDescriptor.id, choice.id);
-                props.onSelected();
+            rows: [
+              {
+                id: "none",
+                label: "No alias",
+                description: undefined as string | undefined,
+                selected: session.selectedAliasId === null,
+                onPress: () => {
+                  void Haptics.selectionAsync();
+                  session.onUpdateAliasId?.(null);
+                  props.onSelected();
+                },
               },
-            })),
+              ...session.identityAliases.map((alias) => ({
+                id: alias.id,
+                label: alias.displayName,
+                description: undefined as string | undefined,
+                selected: alias.id === session.selectedAliasId,
+                onPress: () => {
+                  void Haptics.selectionAsync();
+                  session.onUpdateAliasId?.(alias.id);
+                  props.onSelected();
+                },
+              })),
+            ],
           }
-        : null;
+        : activeDescriptor?.type === "select"
+          ? {
+              rows: selectableChoices(activeDescriptor).map((choice) => ({
+                id: choice.id,
+                label: choice.label,
+                description: undefined,
+                selected: choice.id === getProviderOptionCurrentValue(activeDescriptor),
+                onPress: () => {
+                  void Haptics.selectionAsync();
+                  session.applyOptionChange(activeDescriptor.id, choice.id);
+                  props.onSelected();
+                },
+              })),
+            }
+          : null;
 
   if (!submenuContent) {
     return <View className="flex-1 bg-sheet" />;
@@ -1044,9 +1102,11 @@ function ThreadSettingsModelsScreen() {
           const title =
             submenu.kind === "runtime"
               ? "Runtime"
-              : (session.displayedDescriptors.find(
-                  (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
-                )?.label ?? "Option");
+              : submenu.kind === "identity"
+                ? "Identity"
+                : (session.displayedDescriptors.find(
+                    (descriptor) => descriptor.type === "select" && descriptor.id === submenu.id,
+                  )?.label ?? "Option");
           navigation.navigate("ThreadSettingsChoice", { ...submenu, title });
         }}
       />

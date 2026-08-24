@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { IdentityAlias, IdentityAliasId, IdentityAliasMap } from "./identityAlias.ts";
+import {
+  IdentityAlias,
+  IdentityAliasId,
+  IdentityAliasMap,
+  identityAliasGrokHomeChanged,
+} from "./identityAlias.ts";
 
 const decodeIdentityAliasId = Schema.decodeUnknownSync(IdentityAliasId);
 const decodeIdentityAlias = Schema.decodeUnknownSync(IdentityAlias);
@@ -64,5 +69,43 @@ describe("IdentityAliasMap", () => {
       },
     });
     expect(decoded.work?.id).toBe("work");
+  });
+});
+
+describe("identityAliasGrokHomeChanged", () => {
+  it("treats empty homes as the same continuation group", () => {
+    expect(identityAliasGrokHomeChanged(undefined, undefined)).toBe(false);
+    expect(identityAliasGrokHomeChanged({ grokHome: "" }, { grokHome: "  " })).toBe(false);
+  });
+
+  it("detects a GROK_HOME change", () => {
+    expect(
+      identityAliasGrokHomeChanged({ grokHome: "~/.grok-work" }, { grokHome: "~/.grok-personal" }),
+    ).toBe(true);
+    expect(identityAliasGrokHomeChanged({ grokHome: "" }, { grokHome: "~/.grok-work" })).toBe(true);
+  });
+
+  it("gates continuation on extraEnv GROK_HOME when it overrides the field", () => {
+    expect(
+      identityAliasGrokHomeChanged(
+        { grokHome: "~/.grok-work" },
+        {
+          grokHome: "~/.grok-work",
+          extraEnv: [{ name: "GROK_HOME", value: "~/.grok-personal", sensitive: false }],
+        },
+      ),
+    ).toBe(true);
+    expect(
+      identityAliasGrokHomeChanged(
+        {
+          grokHome: "~/.grok-field",
+          extraEnv: [{ name: "GROK_HOME", value: "~/.grok-extra", sensitive: false }],
+        },
+        {
+          grokHome: "~/.grok-other-field",
+          extraEnv: [{ name: "GROK_HOME", value: "~/.grok-extra", sensitive: false }],
+        },
+      ),
+    ).toBe(false);
   });
 });

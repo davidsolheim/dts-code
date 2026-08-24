@@ -77,6 +77,11 @@ Run a quick **Rescan** after setting up a new machine or changing credentials.
    ```
 3. Open **Settings → Source Control** in T3 Code and verify GitHub shows as authenticated
 
+If you use [identity aliases](./identity-aliases.md), T3 Code probes `gh auth status` once for the
+unbound default and once per alias `GH_CONFIG_DIR`. The page says who is authenticated **for this
+alias**, using `gh` on the server. There is no in-app `gh auth switch`. Log in with
+`GH_CONFIG_DIR=... gh auth login` on the server host.
+
 You can now clone, publish, and create pull requests.
 
 ### For GitLab

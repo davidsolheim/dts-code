@@ -95,6 +95,7 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { IdentityAliasPicker } from "./IdentityAliasPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
@@ -3339,6 +3340,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onInstanceModelChange={onProviderModelSelect}
                     />
                   )}
+                  <IdentityAliasPicker
+                    compact={isComposerFooterCompact}
+                    environmentId={environmentId}
+                    threadId={activeThreadId}
+                    currentAliasId={activeThread?.aliasId}
+                  />
 
                   {isComposerFooterCompact ? (
                     <CompactComposerControlsMenu

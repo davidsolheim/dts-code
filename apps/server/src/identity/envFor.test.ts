@@ -7,7 +7,12 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { envFor, overlayProcessEnv, pickGitAuthorEnv } from "./envFor.ts";
+import {
+  envFor,
+  overlayIdentityAliasSpawnEnv,
+  overlayProcessEnv,
+  pickGitAuthorEnv,
+} from "./envFor.ts";
 
 const decodeIdentityAlias = Schema.decodeUnknownSync(IdentityAlias);
 
@@ -107,5 +112,57 @@ it.layer(NodeServices.layer)("envFor", (it) => {
       expect(personalEnv.GROK_HOME).toBe(path.resolve("/tmp/personal-grok"));
       expect(personalEnv.GH_CONFIG_DIR).toBe(path.resolve("/tmp/personal-gh"));
     }),
+  );
+
+  it.effect("spawn overlay writes empty strings for unset identity keys", () =>
+    Effect.gen(function* () {
+      const aliasEnv = yield* envFor(
+        decodeIdentityAlias({
+          id: "personal",
+          displayName: "Personal",
+        }),
+      );
+      const spawned = overlayIdentityAliasSpawnEnv(
+        { PATH: "/bin", GH_CONFIG_DIR: "/host-gh", GROK_HOME: "/host-grok" },
+        aliasEnv,
+      );
+      expect(spawned.GH_CONFIG_DIR).toBe("");
+      expect(spawned.GROK_HOME).toBe("");
+      expect(spawned.PATH).toBe("/bin");
+      expect("GIT_AUTHOR_NAME" in spawned).toBe(false);
+    }),
+  );
+
+  it.effect(
+    "spawn overlay omits git author keys when alias has GH_CONFIG_DIR but no gitAuthor",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const aliasEnv = yield* envFor(
+          decodeIdentityAlias({
+            id: "work",
+            displayName: "Work",
+            ghConfigDir: "/tmp/alias-gh",
+          }),
+        );
+        const spawned = overlayIdentityAliasSpawnEnv(
+          {
+            PATH: "/bin",
+            GH_CONFIG_DIR: "/host-gh",
+            GROK_HOME: "/host-grok",
+            GIT_AUTHOR_NAME: "Host User",
+            GIT_AUTHOR_EMAIL: "host@example.com",
+            GIT_COMMITTER_NAME: "Host User",
+            GIT_COMMITTER_EMAIL: "host@example.com",
+          },
+          aliasEnv,
+        );
+        expect(spawned.GH_CONFIG_DIR).toBe(path.resolve("/tmp/alias-gh"));
+        expect(spawned.GROK_HOME).toBe("");
+        expect("GIT_AUTHOR_NAME" in spawned).toBe(false);
+        expect("GIT_AUTHOR_EMAIL" in spawned).toBe(false);
+        expect("GIT_COMMITTER_NAME" in spawned).toBe(false);
+        expect("GIT_COMMITTER_EMAIL" in spawned).toBe(false);
+      }),
   );
 });

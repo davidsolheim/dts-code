@@ -101,7 +101,7 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useClientSettings } from "../hooks/useSettings";
+import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -163,6 +163,7 @@ import {
   type SnoozePreset,
 } from "./Sidebar.snooze";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { IdentityAliasIcon } from "./chat/IdentityAliasIcon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { getTriggerDisplayModelLabel } from "./chat/providerIconUtils";
 import {
@@ -266,6 +267,7 @@ function SidebarThreadTooltip({
   branchMismatch,
   terminalStatus,
   terminalProcessCount,
+  identityAlias,
 }: {
   thread: SidebarThreadSummary;
   projectTitle: string | null;
@@ -282,6 +284,7 @@ function SidebarThreadTooltip({
   } | null;
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
+  identityAlias?: { readonly displayName: string; readonly accentColor?: string | undefined };
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   return (
@@ -326,6 +329,16 @@ function SidebarThreadTooltip({
               <div className="min-w-0 flex-1 wrap-break-word leading-5">
                 You're currently checked out on another branch.
               </div>
+            </div>
+          ) : null}
+          {identityAlias ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <IdentityAliasIcon
+                displayName={identityAlias.displayName}
+                accentColor={identityAlias.accentColor}
+                className="size-3 text-[7px]"
+              />
+              <div className="min-w-0 truncate text-foreground/75">{identityAlias.displayName}</div>
             </div>
           ) : null}
           {driverKind ? (
@@ -923,6 +936,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   const modelInstanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
   const providerEntry = props.providerEntryByInstanceId.get(modelInstanceId) ?? null;
   const driverKind = providerEntry?.driverKind ?? null;
+  const identityAliases = useEnvironmentSettings(
+    thread.environmentId,
+    (settings) => settings.identityAliases,
+  );
+  const identityAlias =
+    thread.aliasId !== undefined && thread.aliasId !== null
+      ? identityAliases[thread.aliasId]
+      : undefined;
   const showInstanceBadge =
     providerEntry !== null &&
     shouldShowInstanceBadge(providerEntry, props.providerEntryByInstanceId.values());
@@ -950,6 +971,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       branchMismatch={branchMismatch}
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
+      {...(identityAlias
+        ? {
+            identityAlias: {
+              displayName: identityAlias.displayName,
+              accentColor: identityAlias.accentColor,
+            },
+          }
+        : {})}
     />
   );
 
@@ -1561,6 +1590,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                     <ServerIcon aria-hidden className="size-3.5" />
                   </span>
                 ) : null}
+                {identityAlias ? (
+                  <span className="inline-flex shrink-0 items-center">
+                    <IdentityAliasIcon
+                      displayName={identityAlias.displayName}
+                      accentColor={identityAlias.accentColor}
+                      className="size-3.5 text-[7px]"
+                    />
+                  </span>
+                ) : null}
                 {driverKind ? (
                   <span className="inline-flex shrink-0 items-center">
                     <ProviderInstanceIcon
@@ -1631,6 +1669,14 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   });
   const modelInstanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
   const providerEntry = props.providerEntryByInstanceId.get(modelInstanceId) ?? null;
+  const identityAliases = useEnvironmentSettings(
+    thread.environmentId,
+    (settings) => settings.identityAliases,
+  );
+  const identityAlias =
+    thread.aliasId !== undefined && thread.aliasId !== null
+      ? identityAliases[thread.aliasId]
+      : undefined;
   const showInstanceBadge =
     providerEntry !== null &&
     shouldShowInstanceBadge(providerEntry, props.providerEntryByInstanceId.values());
@@ -1698,6 +1744,14 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
           branchMismatch={branchMismatch}
           terminalStatus={terminalStatus}
           terminalProcessCount={runningTerminalIds.length}
+          {...(identityAlias
+            ? {
+                identityAlias: {
+                  displayName: identityAlias.displayName,
+                  accentColor: identityAlias.accentColor,
+                },
+              }
+            : {})}
         />
       </Tooltip>
     </li>

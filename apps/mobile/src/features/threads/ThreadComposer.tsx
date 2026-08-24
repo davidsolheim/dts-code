@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  IdentityAliasId,
   MessageId,
   ModelSelection,
   OrchestrationThreadShell,
@@ -7,6 +8,7 @@ import type {
   RuntimeMode,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
+import { identityAliasGrokHomeChanged } from "@t3tools/contracts";
 import {
   detectComposerTrigger,
   replaceTextRange,
@@ -54,6 +56,7 @@ import {
 } from "../../components/ComposerToolbar";
 import { ControlPill } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
+import { IdentityAliasBadge } from "../../components/IdentityAliasBadge";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
@@ -66,6 +69,8 @@ import {
 } from "@t3tools/shared/searchRanking";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
+import { threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 import {
@@ -645,6 +650,49 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [currentModelOption?.capabilities, currentModelSelection.options],
   );
   const settingsOwnerId = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const identityAliases = useMemo(() => {
+    const map = props.serverConfig?.settings.identityAliases ?? {};
+    return Object.values(map).toSorted((left, right) =>
+      left.displayName.localeCompare(right.displayName),
+    );
+  }, [props.serverConfig?.settings.identityAliases]);
+  const selectedIdentityAlias =
+    identityAliases.find((alias) => alias.id === props.selectedThread.aliasId) ?? null;
+  const boundAliasId = props.selectedThread.aliasId ?? null;
+  const boundIdentityMissing = boundAliasId != null && selectedIdentityAlias === null;
+  const showIdentityControl = identityAliases.length > 0 || boundIdentityMissing;
+  const updateThreadMetadata = useAtomCommand(
+    threadEnvironment.updateMetadata,
+    "thread identity alias update",
+  );
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, "thread session stop");
+  const onUpdateAliasId = useCallback(
+    (aliasId: string | null) => {
+      const next = identityAliases.find((alias) => alias.id === aliasId) ?? null;
+      if (boundIdentityMissing || identityAliasGrokHomeChanged(selectedIdentityAlias, next)) {
+        void stopThreadSession({
+          environmentId: props.environmentId,
+          input: { threadId: props.selectedThread.id },
+        });
+      }
+      void updateThreadMetadata({
+        environmentId: props.environmentId,
+        input: {
+          threadId: props.selectedThread.id,
+          aliasId: aliasId === null ? null : IdentityAliasId.make(aliasId),
+        },
+      });
+    },
+    [
+      boundIdentityMissing,
+      identityAliases,
+      props.environmentId,
+      props.selectedThread.id,
+      selectedIdentityAlias,
+      stopThreadSession,
+      updateThreadMetadata,
+    ],
+  );
   const settingsRouteSession = useMemo<ExistingThreadSettingsRouteSession>(
     () => ({
       ownerId: settingsOwnerId,
@@ -656,12 +704,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
       runtimeMode: currentRuntimeMode,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+      identityAliases: identityAliases.map((alias) => ({
+        id: alias.id,
+        displayName: alias.displayName,
+      })),
+      selectedAliasId: props.selectedThread.aliasId ?? null,
+      onUpdateAliasId,
     }),
     [
       currentModelSelection,
       currentRuntimeMode,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
+      onUpdateAliasId,
+      identityAliases,
+      props.selectedThread.aliasId,
       providerOptionDescriptors,
       settingsOwnerId,
       threadProviderGroups,
@@ -886,6 +943,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   maxWidth={152}
                   onPress={openSettings}
                 />
+                {selectedIdentityAlias ? (
+                  <ComposerInlineControl
+                    accessibilityLabel={`Identity alias ${selectedIdentityAlias.displayName}`}
+                    iconNode={
+                      <IdentityAliasBadge
+                        displayName={selectedIdentityAlias.displayName}
+                        accentColor={selectedIdentityAlias.accentColor}
+                        size={16}
+                      />
+                    }
+                    label={selectedIdentityAlias.displayName}
+                    maxWidth={120}
+                    onPress={openSettings}
+                  />
+                ) : showIdentityControl ? (
+                  <ComposerInlineControl
+                    accessibilityLabel="Identity alias"
+                    label={boundIdentityMissing ? "Unknown alias" : "Identity"}
+                    maxWidth={120}
+                    onPress={openSettings}
+                  />
+                ) : null}
                 {showStopAction ? (
                   <ComposerToolbarButton
                     accessibilityLabel="Stop"
