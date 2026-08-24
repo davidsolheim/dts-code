@@ -114,6 +114,7 @@ export interface GitCommitProgress {
 export interface GitCommitOptions {
   readonly timeoutMs?: number;
   readonly progress?: GitCommitProgress;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export interface GitPushResult {

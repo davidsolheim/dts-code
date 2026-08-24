@@ -65,6 +65,7 @@ import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgro
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
+import { withIdentityAliasEnvForCwd } from "./identity/provideIdentityAliasGitHubCliEnv.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -1829,7 +1830,9 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
-            sourceControlRepositories.lookupRepository(input),
+            withIdentityAliasEnvForCwd(input.cwd)(
+              sourceControlRepositories.lookupRepository(input),
+            ),
             {
               "rpc.aggregate": "source-control",
             },
@@ -1837,7 +1840,9 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlCloneRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlCloneRepository,
-            sourceControlRepositories.cloneRepository(input),
+            withIdentityAliasEnvForCwd(input.destinationPath)(
+              sourceControlRepositories.cloneRepository(input),
+            ),
             {
               "rpc.aggregate": "source-control",
             },
@@ -1845,9 +1850,11 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlPublishRepository,
-            sourceControlRepositories
-              .publishRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            withIdentityAliasEnvForCwd(input.cwd)(
+              sourceControlRepositories
+                .publishRepository(input)
+                .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            ),
             {
               "rpc.aggregate": "source-control",
             },
@@ -2034,7 +2041,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsRefreshStatus]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRefreshStatus,
-            vcsStatusBroadcaster.refreshStatus(input.cwd),
+            withIdentityAliasEnvForCwd(input.cwd)(vcsStatusBroadcaster.refreshStatus(input.cwd)),
             {
               "rpc.aggregate": "vcs",
             },
@@ -2055,29 +2062,31 @@ const makeWsRpcLayer = (
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
             Stream.callback<GitActionProgressEvent, GitManagerServiceError>((queue) =>
-              gitWorkflow
-                .runStackedAction(input, {
-                  actionId: input.actionId,
-                  progressReporter: {
-                    publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
-                  },
-                })
-                .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: () =>
-                      refreshGitStatus(input.cwd).pipe(
-                        Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                      ),
-                  }),
-                ),
+              withIdentityAliasEnvForCwd(input.cwd)(
+                gitWorkflow
+                  .runStackedAction(input, {
+                    actionId: input.actionId,
+                    progressReporter: {
+                      publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
+                    },
+                  })
+                  .pipe(
+                    Effect.matchCauseEffect({
+                      onFailure: (cause) => Queue.failCause(queue, cause),
+                      onSuccess: () =>
+                        refreshGitStatus(input.cwd).pipe(
+                          Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                        ),
+                    }),
+                  ),
+              ),
             ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.gitResolvePullRequest]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitResolvePullRequest,
-            gitWorkflow.resolvePullRequest(input),
+            withIdentityAliasEnvForCwd(input.cwd)(gitWorkflow.resolvePullRequest(input)),
             {
               "rpc.aggregate": "git",
             },
@@ -2085,9 +2094,11 @@ const makeWsRpcLayer = (
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitPreparePullRequestThread,
-            gitWorkflow
-              .preparePullRequestThread(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            withIdentityAliasEnvForCwd(input.cwd)(
+              gitWorkflow
+                .preparePullRequestThread(input)
+                .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            ),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.vcsListRefs]: (input) =>

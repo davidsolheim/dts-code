@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../config.ts";
+import { provideIdentityAliasGitHubCliEnv } from "../identity/provideIdentityAliasGitHubCliEnv.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 const isSourceControlRepositoryError = Schema.is(SourceControlRepositoryError);
@@ -277,13 +278,19 @@ export const make = Effect.gen(function* () {
 
   return SourceControlRepositoryService.of({
     lookupRepository: (input) =>
-      lookupRepository(input).pipe(mapRepositoryError("lookupRepository", input.provider)),
+      provideIdentityAliasGitHubCliEnv(
+        lookupRepository(input).pipe(mapRepositoryError("lookupRepository", input.provider)),
+      ),
     cloneRepository: (input) =>
-      cloneRepository(input).pipe(
-        mapRepositoryError("cloneRepository", input.provider ?? "unknown"),
+      provideIdentityAliasGitHubCliEnv(
+        cloneRepository(input).pipe(
+          mapRepositoryError("cloneRepository", input.provider ?? "unknown"),
+        ),
       ),
     publishRepository: (input) =>
-      publishRepository(input).pipe(mapRepositoryError("publishRepository", input.provider)),
+      provideIdentityAliasGitHubCliEnv(
+        publishRepository(input).pipe(mapRepositoryError("publishRepository", input.provider)),
+      ),
   });
 });
 

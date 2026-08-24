@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -255,6 +255,37 @@ it.effect("routes authenticated self-hosted GitLab remotes on non-standard ports
     const provider = yield* registry.resolve({ cwd: "/repo" });
 
     assert.strictEqual(provider.kind, "gitlab");
+  }),
+);
+
+it.effect("forwards GitHubCliProcessEnv into unknown-remote refinement", () =>
+  Effect.gen(function* () {
+    const runCalls: Array<{ readonly env?: NodeJS.ProcessEnv }> = [];
+    const registry = yield* makeRegistry({
+      remotes: [{ name: "origin", url: "https://self-hosted.example.test/group/project.git" }],
+      process: {
+        run: (input) => {
+          runCalls.push(input);
+          return Effect.succeed(
+            processOutput(
+              `self-hosted.example.test
+  ✓ Logged in to self-hosted.example.test as gitlab-user
+  ✓ Token found: ******
+`,
+              { exitCode: ChildProcessSpawner.ExitCode(1) },
+            ),
+          );
+        },
+      },
+    });
+
+    yield* registry.resolve({ cwd: "/repo" }).pipe(
+      Effect.provideService(GitHubCli.GitHubCliProcessEnv, {
+        GH_CONFIG_DIR: "/tmp/alias-gh",
+      }),
+    );
+
+    expect(runCalls.some((call) => call.env?.GH_CONFIG_DIR === "/tmp/alias-gh")).toBe(true);
   }),
 );
 

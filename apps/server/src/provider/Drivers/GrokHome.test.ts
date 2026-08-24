@@ -5,8 +5,14 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 
+import { IdentityAlias } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+
+import { envFor, overlayProcessEnv } from "../../identity/envFor.ts";
 import { buildGrokAcpSpawnInput } from "../acp/GrokAcpSupport.ts";
 import { makeGrokContinuationKey, makeGrokEnvironment, resolveGrokHomePath } from "./GrokHome.ts";
+
+const decodeIdentityAlias = Schema.decodeUnknownSync(IdentityAlias);
 
 it.layer(NodeServices.layer)("GrokHome", (it) => {
   describe("Grok home resolution", () => {
@@ -119,6 +125,35 @@ it.layer(NodeServices.layer)("GrokHome", (it) => {
         expect(yield* makeGrokContinuationKey("grok-work", { homePath: "" })).toBe(
           "grok:instance:grok-work",
         );
+      }),
+    );
+
+    it.effect("spawn env includes alias GROK_HOME after overlay", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const instanceHome = path.resolve("/tmp/instance-grok");
+        const aliasHome = path.resolve("/tmp/alias-grok");
+        const instanceEnv = yield* makeGrokEnvironment(
+          { homePath: instanceHome },
+          {
+            PATH: "/usr/bin",
+            GROK_HOME: "/ambient-grok",
+          },
+        );
+        const aliasEnv = yield* envFor(
+          decodeIdentityAlias({
+            id: "work",
+            displayName: "Work",
+            grokHome: aliasHome,
+          }),
+        );
+        const spawn = buildGrokAcpSpawnInput(
+          { binaryPath: "grok" },
+          "/tmp/project",
+          overlayProcessEnv(instanceEnv, aliasEnv),
+        );
+        expect(spawn.env?.GROK_HOME).toBe(aliasHome);
+        expect(spawn.env?.GROK_HOME).not.toBe(instanceHome);
       }),
     );
   });

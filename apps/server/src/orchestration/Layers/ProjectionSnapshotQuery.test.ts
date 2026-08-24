@@ -1,6 +1,7 @@
 import {
   CheckpointRef,
   EventId,
+  IdentityAliasId,
   MessageId,
   ProjectId,
   ThreadId,
@@ -275,6 +276,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
           },
+          defaultAliasId: null,
           faviconPath: null,
           scripts: [
             {
@@ -300,6 +302,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
           },
+          aliasId: null,
           interactionMode: "default",
           runtimeMode: "full-access",
           branch: null,
@@ -395,6 +398,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
           },
+          defaultAliasId: null,
           faviconPath: null,
           scripts: [
             {
@@ -419,6 +423,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
           },
+          aliasId: null,
           interactionMode: "default",
           runtimeMode: "full-access",
           branch: null,
@@ -832,6 +837,193 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           assert.equal(firstThreadId.value, ThreadId.make("thread-first"));
         }
       }),
+  );
+
+  it.effect("resolves identity alias bindings from worktree cwd then project root", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          default_alias_id,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'project-alias',
+            'Alias Project',
+            '/tmp/alias-root',
+            NULL,
+            'work',
+            '[]',
+            '2026-03-01T00:00:00.000Z',
+            '2026-03-01T00:00:01.000Z',
+            NULL
+          ),
+          (
+            'project-empty',
+            'Empty Project',
+            '/tmp/alias-empty',
+            NULL,
+            'work',
+            '[]',
+            '2026-03-01T00:00:08.000Z',
+            '2026-03-01T00:00:09.000Z',
+            NULL
+          ),
+          (
+            'project-cleared',
+            'Cleared Project',
+            '/tmp/alias-cleared',
+            NULL,
+            'work',
+            '[]',
+            '2026-03-01T00:00:12.000Z',
+            '2026-03-01T00:00:13.000Z',
+            NULL
+          )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          alias_id,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-root-older',
+            'project-alias',
+            'Older Root',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            NULL,
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            '2026-03-01T00:00:02.000Z',
+            '2026-03-01T00:00:03.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-root-newer',
+            'project-alias',
+            'Newer Root',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'personal',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            '2026-03-01T00:00:04.000Z',
+            '2026-03-01T00:00:05.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-worktree',
+            'project-alias',
+            'Worktree',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'teton',
+            'full-access',
+            'default',
+            NULL,
+            '/tmp/alias-worktree',
+            NULL,
+            '2026-03-01T00:00:06.000Z',
+            '2026-03-01T00:00:07.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-worktree-cleared',
+            'project-alias',
+            'Cleared Worktree',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            NULL,
+            'full-access',
+            'default',
+            NULL,
+            '/tmp/alias-worktree-cleared',
+            NULL,
+            '2026-03-01T00:00:10.000Z',
+            '2026-03-01T00:00:11.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-root-cleared',
+            'project-cleared',
+            'Cleared Root',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            NULL,
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            '2026-03-01T00:00:14.000Z',
+            '2026-03-01T00:00:15.000Z',
+            NULL,
+            NULL
+          )
+      `;
+
+      const worktree = yield* snapshotQuery.getIdentityAliasBindingForCwd("/tmp/alias-worktree");
+      assert.equal(worktree._tag, "Some");
+      if (worktree._tag === "Some") {
+        assert.equal(worktree.value, IdentityAliasId.make("teton"));
+      }
+
+      const root = yield* snapshotQuery.getIdentityAliasBindingForCwd("/tmp/alias-root");
+      assert.equal(root._tag, "Some");
+      if (root._tag === "Some") {
+        assert.equal(root.value, IdentityAliasId.make("personal"));
+      }
+
+      const missing = yield* snapshotQuery.getIdentityAliasBindingForCwd("/tmp/missing");
+      assert.equal(missing._tag, "None");
+
+      const clearedWorktree = yield* snapshotQuery.getIdentityAliasBindingForCwd(
+        "/tmp/alias-worktree-cleared",
+      );
+      assert.equal(clearedWorktree._tag, "None");
+
+      const noThread = yield* snapshotQuery.getIdentityAliasBindingForCwd("/tmp/alias-empty");
+      assert.equal(noThread._tag, "Some");
+      if (noThread._tag === "Some") {
+        assert.equal(noThread.value, IdentityAliasId.make("work"));
+      }
+
+      const clearedRoot = yield* snapshotQuery.getIdentityAliasBindingForCwd("/tmp/alias-cleared");
+      assert.equal(clearedRoot._tag, "None");
+    }),
   );
 
   it.effect("reads single-thread checkpoint context without hydrating unrelated threads", () =>

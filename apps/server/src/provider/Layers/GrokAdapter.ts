@@ -67,7 +67,8 @@ import {
   XAiAskUserQuestionRequest,
 } from "../acp/XAiAcpExtension.ts";
 import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
-import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { IdentityAliasProcessEnv } from "../../identity/IdentityAliasProcessEnv.ts";
+import { overlayProcessEnv } from "../../identity/envFor.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
@@ -570,9 +571,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           });
 
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const identityAliasEnv = yield* IdentityAliasProcessEnv;
+          const environment =
+            identityAliasEnv === undefined
+              ? options?.environment
+              : overlayProcessEnv(options?.environment ?? {}, identityAliasEnv);
           const acp = yield* makeGrokAcpRuntime({
             grokSettings,
-            ...(options?.environment ? { environment: options.environment } : {}),
+            ...(environment ? { environment } : {}),
             childProcessSpawner,
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),

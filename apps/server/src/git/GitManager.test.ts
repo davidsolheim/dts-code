@@ -25,6 +25,7 @@ import type {
 import {
   DEFAULT_SERVER_SETTINGS,
   GitCommandError,
+  IdentityAliasId,
   ProviderDriverKind,
   ProviderInstanceId,
   TextGenerationError,
@@ -39,6 +40,8 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { IdentityAliasProcessEnv } from "../identity/IdentityAliasProcessEnv.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as GitManager from "./GitManager.ts";
 
 interface FakeGhScenario {
@@ -349,6 +352,7 @@ function createTextGeneration(
 function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
   service: GitHubCli.GitHubCli["Service"];
   ghCalls: string[];
+  ghEnvs: Array<NodeJS.ProcessEnv | undefined>;
 } {
   const prListQueue = [...(scenario.prListSequence ?? [])];
   const prListQueueByHeadSelector = new Map(
@@ -358,8 +362,9 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
     ]),
   );
   const ghCalls: string[] = [];
+  const ghEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
 
-  const execute: GitHubCli.GitHubCli["Service"]["execute"] = (input) => {
+  const runFakeExecute: GitHubCli.GitHubCli["Service"]["execute"] = (input) => {
     const args = [...input.args];
     ghCalls.push(args.join(" "));
 
@@ -492,6 +497,12 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
     );
   };
 
+  const execute: GitHubCli.GitHubCli["Service"]["execute"] = (input) =>
+    Effect.gen(function* () {
+      ghEnvs.push(yield* GitHubCli.GitHubCliProcessEnv);
+      return yield* runFakeExecute(input);
+    });
+
   return {
     service: {
       execute,
@@ -577,6 +588,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
         }).pipe(Effect.asVoid),
     },
     ghCalls,
+    ghEnvs,
   };
 }
 
@@ -615,13 +627,35 @@ function preparePullRequestThread(
   return manager.preparePullRequestThread(input);
 }
 
+function unusedProjectionSnapshotQuery(binding: Option.Option<IdentityAliasId> = Option.none()) {
+  return Layer.succeed(ProjectionSnapshotQuery, {
+    getCommandReadModel: () => Effect.die("unused"),
+    getSnapshot: () => Effect.die("unused"),
+    getShellSnapshot: () => Effect.die("unused"),
+    getArchivedShellSnapshot: () => Effect.die("unused"),
+    getSnapshotSequence: () => Effect.die("unused"),
+    getCounts: () => Effect.die("unused"),
+    getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+    getProjectShellById: () => Effect.succeed(Option.none()),
+    getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+    getIdentityAliasBindingForCwd: () => Effect.succeed(binding),
+    getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+    getFullThreadDiffContext: () => Effect.succeed(Option.none()),
+    getThreadShellById: () => Effect.succeed(Option.none()),
+    getThreadDetailById: () => Effect.succeed(Option.none()),
+    getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+    searchThreads: () => Effect.succeed({ matches: [] }),
+  });
+}
+
 function makeManager(input?: {
   ghScenario?: FakeGhScenario;
   textGeneration?: Partial<FakeGitTextGeneration>;
   serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
+  identityAliasBinding?: Option.Option<IdentityAliasId>;
 }) {
-  const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
+  const { service: gitHubCli, ghCalls, ghEnvs } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
   const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-git-manager-test-",
@@ -662,11 +696,12 @@ function makeManager(input?: {
     ),
     vcsDriverLayer,
     serverSettingsLayer,
+    unusedProjectionSnapshotQuery(input?.identityAliasBinding),
   ).pipe(Layer.provideMerge(sourceControlRegistryLayer), Layer.provideMerge(NodeServices.layer));
 
   return GitManager.make.pipe(
     Effect.provide(managerLayer),
-    Effect.map((manager) => ({ manager, ghCalls })),
+    Effect.map((manager) => ({ manager, ghCalls, ghEnvs })),
   );
 }
 
@@ -719,6 +754,68 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         state: "open",
         updatedAt: null,
       });
+    }),
+  );
+
+  it.effect("status, resolve, and prepare see alias GH_CONFIG_DIR without startSession", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/alias-gh"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/alias-gh"]);
+
+      const { manager, ghEnvs } = yield* makeManager({
+        identityAliasBinding: Option.some(IdentityAliasId.make("work")),
+        serverSettings: {
+          identityAliases: {
+            work: {
+              id: "work",
+              displayName: "Work",
+              grokHome: "",
+              ghConfigDir: "/tmp/alias-gh-status",
+            },
+          },
+        },
+        ghScenario: {
+          prListSequence: [
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                number: 13,
+                title: "Alias PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/13",
+                baseRefName: "main",
+                headRefName: "feature/alias-gh",
+              },
+            ]),
+          ],
+          pullRequest: {
+            number: 13,
+            title: "Alias PR",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/13",
+            baseRefName: "main",
+            headRefName: "feature/alias-gh",
+            state: "open",
+          },
+        },
+      });
+
+      yield* manager.status({ cwd: repoDir });
+      yield* resolvePullRequest(manager, { cwd: repoDir, reference: "#13" });
+      yield* preparePullRequestThread(manager, {
+        cwd: repoDir,
+        reference: "#13",
+        mode: "local",
+      });
+
+      expect(ghEnvs.length).toBeGreaterThan(0);
+      expect(
+        ghEnvs.every(
+          (env) => env !== undefined && env.GH_CONFIG_DIR?.includes("alias-gh-status") === true,
+        ),
+      ).toBe(true);
     }),
   );
 
@@ -1823,6 +1920,45 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         ),
       ).toBe("Implement stacked git actions");
     }),
+  );
+
+  it.effect(
+    "applies identity alias git author on stacked commit when IdentityAliasProcessEnv is provided",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nworld\n");
+
+        const { manager } = yield* makeManager({
+          textGeneration: {
+            generateCommitMessage: () =>
+              Effect.succeed({ subject: "Alias author commit", body: "" }),
+          },
+        });
+        yield* runStackedAction(manager, {
+          cwd: repoDir,
+          action: "commit",
+        }).pipe(
+          Effect.provideService(IdentityAliasProcessEnv, {
+            GIT_AUTHOR_NAME: "Work Bot",
+            GIT_AUTHOR_EMAIL: "work@example.com",
+            GIT_COMMITTER_NAME: "Work Bot",
+            GIT_COMMITTER_EMAIL: "work@example.com",
+          }),
+        );
+
+        expect(
+          yield* runGit(repoDir, ["log", "-1", "--pretty=%an"]).pipe(
+            Effect.map((result) => result.stdout.trim()),
+          ),
+        ).toBe("Work Bot");
+        expect(
+          yield* runGit(repoDir, ["log", "-1", "--pretty=%ae"]).pipe(
+            Effect.map((result) => result.stdout.trim()),
+          ),
+        ).toBe("work@example.com");
+      }),
   );
 
   it.effect("preserves custom style when instructions are empty", () =>

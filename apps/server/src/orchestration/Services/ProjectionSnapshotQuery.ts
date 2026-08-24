@@ -19,6 +19,7 @@ import type {
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
   OrchestrationThreadShell,
+  IdentityAliasId,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -139,6 +140,18 @@ export interface ProjectionSnapshotQueryShape {
   readonly getFirstActiveThreadIdByProjectId: (
     projectId: ProjectId,
   ) => Effect.Effect<Option.Option<ThreadId>, ProjectionRepositoryError>;
+
+  /**
+   * Resolve the identity alias bound to a workspace root or worktree cwd.
+   *
+   * Prefers an active thread whose `worktreePath` matches, then the most
+   * recently updated root thread on the project at that workspace root.
+   * A matching thread uses only `thread.aliasId` (null means unbound).
+   * `project.defaultAliasId` applies only when no thread matches.
+   */
+  readonly getIdentityAliasBindingForCwd: (
+    cwd: string,
+  ) => Effect.Effect<Option.Option<IdentityAliasId>, ProjectionRepositoryError>;
 
   /**
    * Read the checkpoint context needed to resolve a single thread diff.

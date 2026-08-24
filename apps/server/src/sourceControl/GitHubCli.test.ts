@@ -1,10 +1,16 @@
 import { assert, it, afterEach, describe, expect, vi } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
+import { IdentityAlias, VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
+
+import { envFor } from "../identity/envFor.ts";
+import { provideIdentityAliasProcessEnv } from "../identity/provideIdentityAliasGitHubCliEnv.ts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
@@ -690,5 +696,75 @@ describe("GitHubCli.layer", () => {
         GH_CONFIG_DIR: "/tmp/gh-config-context",
       }),
     ),
+  );
+
+  it.effect("execute and probe see GH_CONFIG_DIR from envFor", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const configDir = path.resolve("/tmp/alias-gh-config");
+      const aliasEnv = yield* envFor(
+        Schema.decodeUnknownSync(IdentityAlias)({
+          id: "work",
+          displayName: "Work",
+          ghConfigDir: "/tmp/alias-gh-config",
+        }),
+      );
+      expect(aliasEnv.GH_CONFIG_DIR).toBe(configDir);
+
+      mockRun.mockImplementation((input) => {
+        if (input.args[0] === "--version") {
+          return Effect.succeed(processOutput("gh version 2.83.0\n"));
+        }
+        return Effect.succeed(processOutput(authHostsJson("alias-user")));
+      });
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh
+        .execute({
+          cwd: "/repo",
+          args: ["--version"],
+        })
+        .pipe(Effect.provideService(GitHubCli.GitHubCliProcessEnv, aliasEnv));
+
+      expect(mockRun).toHaveBeenCalledWith(
+        executeRunInput({
+          args: ["--version"],
+          env: { GH_CONFIG_DIR: configDir },
+        }),
+      );
+
+      const probed = yield* probeSourceControlProvider({
+        spec: GitHubSourceControlProvider.discovery,
+        process: { run: mockRun },
+        cwd: "/repo",
+        env: aliasEnv,
+      });
+      expect(probed.auth.status).toBe("authenticated");
+      expect(probed.auth.account).toEqual(Option.some("alias-user"));
+      const probeAuthCall = mockRun.mock.calls.find((call) => call[0]?.args[0] === "auth");
+      expect(probeAuthCall?.[0]?.env?.GH_CONFIG_DIR).toBe(configDir);
+    }).pipe(Effect.provide(layer), Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("execute sees alias GH_CONFIG_DIR without startSession", () =>
+    Effect.gen(function* () {
+      mockRun.mockImplementation(() => Effect.succeed(processOutput("gh version 2.83.0\n")));
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* provideIdentityAliasProcessEnv({
+        GH_CONFIG_DIR: "/tmp/alias-gh-no-session",
+      })(
+        gh.execute({
+          cwd: "/repo",
+          args: ["--version"],
+        }),
+      );
+
+      expect(mockRun).toHaveBeenCalledWith(
+        executeRunInput({
+          args: ["--version"],
+          env: { GH_CONFIG_DIR: "/tmp/alias-gh-no-session" },
+        }),
+      );
+    }).pipe(Effect.provide(layer)),
   );
 });

@@ -22,11 +22,30 @@ import {
   type SourceControlProviderDiscoverySpec,
 } from "./SourceControlProviderDiscovery.ts";
 import { ServerConfig } from "../config.ts";
+import * as GitHubCli from "./GitHubCli.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 
 const PROVIDER_DETECTION_CACHE_CAPACITY = 2_048;
 const PROVIDER_DETECTION_CACHE_TTL = Duration.seconds(5);
+
+function providerDetectionCacheKey(cwd: string, githubEnv: NodeJS.ProcessEnv | undefined): string {
+  if (githubEnv === undefined || !Object.hasOwn(githubEnv, "GH_CONFIG_DIR")) {
+    return `${cwd}\0ambient`;
+  }
+  return `${cwd}\0gh:${githubEnv.GH_CONFIG_DIR ?? ""}`;
+}
+
+function cwdFromProviderDetectionCacheKey(cacheKey: string): string {
+  const separator = cacheKey.indexOf("\0");
+  return separator === -1 ? cacheKey : cacheKey.slice(0, separator);
+}
+
+function withGitHubCliEnv(githubEnv: NodeJS.ProcessEnv | undefined): {
+  readonly env?: NodeJS.ProcessEnv;
+} {
+  return githubEnv !== undefined ? { env: githubEnv } : {};
+}
 
 export interface SourceControlProviderRegistration {
   readonly kind: SourceControlProviderKind;
@@ -209,7 +228,9 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
       Effect.succeed(providers.get(kind) ?? unsupportedProvider(kind));
 
     const detectProviderContext = Effect.fn("SourceControlProviderRegistry.detectProviderContext")(
-      function* (cwd: string) {
+      function* (cacheKey: string) {
+        const cwd = cwdFromProviderDetectionCacheKey(cacheKey);
+        const githubEnv = yield* GitHubCli.GitHubCliProcessEnv;
         const handle = yield* vcsRegistry.resolve({ cwd }).pipe(
           Effect.mapError(
             (error) =>
@@ -241,6 +262,7 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
           process,
           cwd,
           context,
+          ...withGitHubCliEnv(githubEnv),
         });
       },
     );
@@ -255,39 +277,48 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
     });
 
     const resolveHandle: SourceControlProviderRegistry["Service"]["resolveHandle"] = (input) =>
-      (input.context === undefined
-        ? Cache.get(providerContextCache, input.cwd)
-        : refineUnknownRemoteProvider({
-            specs: discoverySpecs,
-            process,
-            cwd: input.cwd,
-            context: input.context,
-          })
-      ).pipe(
-        Effect.map((context) => {
-          const kind = context?.provider.kind ?? "unknown";
-          const provider = providers.get(kind) ?? unsupportedProvider(kind);
-          return {
-            provider: bindProviderContext(provider, context),
-            context,
-          } satisfies SourceControlProviderHandle;
-        }),
-      );
+      Effect.gen(function* () {
+        const githubEnv = yield* GitHubCli.GitHubCliProcessEnv;
+        return yield* (
+          input.context === undefined
+            ? Cache.get(providerContextCache, providerDetectionCacheKey(input.cwd, githubEnv))
+            : refineUnknownRemoteProvider({
+                specs: discoverySpecs,
+                process,
+                cwd: input.cwd,
+                context: input.context,
+                ...withGitHubCliEnv(githubEnv),
+              })
+        ).pipe(
+          Effect.map((context) => {
+            const kind = context?.provider.kind ?? "unknown";
+            const provider = providers.get(kind) ?? unsupportedProvider(kind);
+            return {
+              provider: bindProviderContext(provider, context),
+              context,
+            } satisfies SourceControlProviderHandle;
+          }),
+        );
+      });
 
     return SourceControlProviderRegistry.of({
       get,
       resolveHandle,
       resolve: (input) => resolveHandle(input).pipe(Effect.map((handle) => handle.provider)),
-      discover: Effect.all(
-        discoverySpecs.map((spec) =>
-          probeSourceControlProvider({
-            spec,
-            process,
-            cwd: config.cwd,
-          }),
-        ),
-        { concurrency: "unbounded" },
-      ),
+      discover: Effect.gen(function* () {
+        const githubEnv = yield* GitHubCli.GitHubCliProcessEnv;
+        return yield* Effect.all(
+          discoverySpecs.map((spec) =>
+            probeSourceControlProvider({
+              spec,
+              process,
+              cwd: config.cwd,
+              ...(githubEnv !== undefined ? { env: githubEnv } : {}),
+            }),
+          ),
+          { concurrency: "unbounded" },
+        );
+      }),
     });
   },
 );

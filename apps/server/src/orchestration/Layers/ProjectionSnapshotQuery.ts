@@ -22,6 +22,7 @@ import {
   type OrchestrationSession,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
+  IdentityAliasId,
   ModelSelection,
   ProjectId,
   ThreadId,
@@ -132,6 +133,14 @@ const ProjectionThreadSearchRow = Schema.Struct({
 });
 const WorkspaceRootLookupInput = Schema.Struct({
   workspaceRoot: Schema.String,
+});
+const IdentityAliasBindingLookupInput = Schema.Struct({
+  cwd: Schema.String,
+});
+const IdentityAliasBindingLookupRowSchema = Schema.Struct({
+  threadId: Schema.NullOr(ThreadId),
+  aliasId: Schema.NullOr(IdentityAliasId),
+  defaultAliasId: Schema.NullOr(IdentityAliasId),
 });
 const ProjectIdLookupInput = Schema.Struct({
   projectId: ProjectId,
@@ -321,6 +330,7 @@ function mapProjectShellRow(
     repositoryIdentity,
     defaultModelSelection: row.defaultModelSelection,
     defaultThreadEnvMode: row.defaultThreadEnvMode,
+    defaultAliasId: row.defaultAliasId,
     faviconPath: row.faviconPath ?? null,
     scripts: row.scripts,
     createdAt: row.createdAt,
@@ -398,6 +408,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           default_thread_env_mode AS "defaultThreadEnvMode",
+          default_alias_id AS "defaultAliasId",
           favicon_path AS "faviconPath",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -418,6 +429,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          alias_id AS "aliasId",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -454,6 +466,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          alias_id AS "aliasId",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -492,6 +505,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          alias_id AS "aliasId",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -853,6 +867,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           default_thread_env_mode AS "defaultThreadEnvMode",
+          default_alias_id AS "defaultAliasId",
           favicon_path AS "faviconPath",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -877,6 +892,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
           default_thread_env_mode AS "defaultThreadEnvMode",
+          default_alias_id AS "defaultAliasId",
           favicon_path AS "faviconPath",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -901,6 +917,49 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND deleted_at IS NULL
           AND archived_at IS NULL
         ORDER BY created_at ASC, thread_id ASC
+        LIMIT 1
+      `,
+  });
+
+  const getIdentityAliasBindingByWorktreePath = SqlSchema.findOneOption({
+    Request: IdentityAliasBindingLookupInput,
+    Result: IdentityAliasBindingLookupRowSchema,
+    execute: ({ cwd }) =>
+      sql`
+        SELECT
+          threads.thread_id AS "threadId",
+          threads.alias_id AS "aliasId",
+          projects.default_alias_id AS "defaultAliasId"
+        FROM projection_threads AS threads
+        INNER JOIN projection_projects AS projects
+          ON projects.project_id = threads.project_id
+        WHERE threads.worktree_path = ${cwd}
+          AND threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+          AND projects.deleted_at IS NULL
+        ORDER BY threads.updated_at DESC, threads.thread_id DESC
+        LIMIT 1
+      `,
+  });
+
+  const getIdentityAliasBindingByWorkspaceRoot = SqlSchema.findOneOption({
+    Request: IdentityAliasBindingLookupInput,
+    Result: IdentityAliasBindingLookupRowSchema,
+    execute: ({ cwd }) =>
+      sql`
+        SELECT
+          threads.thread_id AS "threadId",
+          threads.alias_id AS "aliasId",
+          projects.default_alias_id AS "defaultAliasId"
+        FROM projection_projects AS projects
+        LEFT JOIN projection_threads AS threads
+          ON threads.project_id = projects.project_id
+          AND threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+          AND threads.worktree_path IS NULL
+        WHERE projects.workspace_root = ${cwd}
+          AND projects.deleted_at IS NULL
+        ORDER BY threads.updated_at DESC, threads.thread_id DESC
         LIMIT 1
       `,
   });
@@ -934,6 +993,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model_selection_json AS "modelSelection",
+          alias_id AS "aliasId",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -1678,6 +1738,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
                 defaultModelSelection: row.defaultModelSelection,
                 defaultThreadEnvMode: row.defaultThreadEnvMode,
+                defaultAliasId: row.defaultAliasId,
                 faviconPath: row.faviconPath ?? null,
                 scripts: row.scripts,
                 createdAt: row.createdAt,
@@ -1690,6 +1751,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 projectId: row.projectId,
                 title: row.title,
                 modelSelection: row.modelSelection,
+                aliasId: row.aliasId,
                 runtimeMode: row.runtimeMode,
                 interactionMode: row.interactionMode,
                 branch: row.branch,
@@ -1809,6 +1871,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   workspaceRoot: row.workspaceRoot,
                   defaultModelSelection: row.defaultModelSelection,
                   defaultThreadEnvMode: row.defaultThreadEnvMode,
+                  defaultAliasId: row.defaultAliasId,
                   faviconPath: row.faviconPath ?? null,
                   scripts: row.scripts,
                   createdAt: row.createdAt,
@@ -1897,6 +1960,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   projectId: row.projectId,
                   title: row.title,
                   modelSelection: row.modelSelection,
+                  aliasId: row.aliasId,
                   runtimeMode: row.runtimeMode,
                   interactionMode: row.interactionMode,
                   branch: row.branch,
@@ -2033,6 +2097,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       projectId: row.projectId,
                       title: row.title,
                       modelSelection: row.modelSelection,
+                      aliasId: row.aliasId,
                       runtimeMode: row.runtimeMode,
                       interactionMode: row.interactionMode,
                       branch: row.branch,
@@ -2178,6 +2243,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   projectId: row.projectId,
                   title: row.title,
                   modelSelection: row.modelSelection,
+                  aliasId: row.aliasId,
                   runtimeMode: row.runtimeMode,
                   interactionMode: row.interactionMode,
                   branch: row.branch,
@@ -2302,6 +2368,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     repositoryIdentity,
                     defaultModelSelection: option.value.defaultModelSelection,
                     defaultThreadEnvMode: option.value.defaultThreadEnvMode,
+                    defaultAliasId: option.value.defaultAliasId,
                     faviconPath: option.value.faviconPath ?? null,
                     scripts: option.value.scripts,
                     createdAt: option.value.createdAt,
@@ -2344,6 +2411,41 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ),
         ),
         Effect.map(Option.map((row) => row.threadId)),
+      );
+
+  const bindingFromRow = (
+    row: Option.Option<{
+      readonly threadId: ThreadId | null;
+      readonly aliasId: IdentityAliasId | null;
+      readonly defaultAliasId: IdentityAliasId | null;
+    }>,
+  ): Option.Option<IdentityAliasId> => {
+    if (Option.isNone(row)) {
+      return Option.none();
+    }
+    // A thread row means spawn/git must honor a cleared aliasId. Project
+    // default applies only when this cwd has no matching thread.
+    if (row.value.threadId != null) {
+      return Option.fromNullishOr(row.value.aliasId);
+    }
+    return Option.fromNullishOr(row.value.defaultAliasId);
+  };
+
+  const getIdentityAliasBindingForCwd: ProjectionSnapshotQueryShape["getIdentityAliasBindingForCwd"] =
+    (cwd) =>
+      getIdentityAliasBindingByWorktreePath({ cwd }).pipe(
+        Effect.flatMap((worktree) =>
+          Option.isSome(worktree)
+            ? Effect.succeed(worktree)
+            : getIdentityAliasBindingByWorkspaceRoot({ cwd }),
+        ),
+        Effect.map(bindingFromRow),
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getIdentityAliasBindingForCwd:query",
+            "ProjectionSnapshotQuery.getIdentityAliasBindingForCwd:decodeRow",
+          ),
+        ),
       );
 
   const getThreadCheckpointContext: ProjectionSnapshotQueryShape["getThreadCheckpointContext"] = (
@@ -2457,6 +2559,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
+        aliasId: threadRow.value.aliasId,
         runtimeMode: threadRow.value.runtimeMode,
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
@@ -2598,6 +2701,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
+        aliasId: threadRow.value.aliasId,
         runtimeMode: threadRow.value.runtimeMode,
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
@@ -2822,6 +2926,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
     getFirstActiveThreadIdByProjectId,
+    getIdentityAliasBindingForCwd,
     getThreadCheckpointContext,
     getFullThreadDiffContext,
     getThreadShellById,

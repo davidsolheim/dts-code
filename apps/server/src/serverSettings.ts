@@ -16,6 +16,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
+  type IdentityAlias,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   ProviderDriverKind,
@@ -146,6 +147,13 @@ function redactProviderEnvironmentVariable(
   };
 }
 
+function identityAliasEnvironmentSecretName(input: {
+  readonly aliasId: string;
+  readonly name: string;
+}): string {
+  return `identity-alias-env-${Buffer.from(input.aliasId, "utf8").toString("base64url")}-${Buffer.from(input.name, "utf8").toString("base64url")}`;
+}
+
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
   const providerInstances = Object.fromEntries(
     Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
@@ -158,7 +166,18 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
         : instance,
     ]),
   );
-  return { ...settings, providerInstances };
+  const identityAliases = Object.fromEntries(
+    Object.entries(settings.identityAliases).map(([aliasId, alias]) => [
+      aliasId,
+      alias.extraEnv
+        ? {
+            ...alias,
+            extraEnv: alias.extraEnv.map(redactProviderEnvironmentVariable),
+          }
+        : alias,
+    ]),
+  );
+  return { ...settings, providerInstances, identityAliases };
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -401,9 +420,44 @@ const make = Effect.gen(function* () {
           environment,
         } satisfies ProviderInstanceConfig;
       }
+      const identityAliases: Record<string, IdentityAlias> = {
+        ...settings.identityAliases,
+      };
+      for (const [aliasId, alias] of Object.entries(settings.identityAliases)) {
+        if (!alias.extraEnv) continue;
+        const extraEnv: ProviderInstanceEnvironmentVariable[] = [];
+        for (const variable of alias.extraEnv) {
+          if (!variable.sensitive || !variable.valueRedacted) {
+            extraEnv.push(variable);
+            continue;
+          }
+          const secret = yield* secretStore
+            .get(identityAliasEnvironmentSecretName({ aliasId, name: variable.name }))
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ServerSettingsError({
+                    settingsPath,
+                    operation: "read-secret",
+                    environmentVariable: variable.name,
+                    cause,
+                  }),
+              ),
+            );
+          extraEnv.push({
+            ...variable,
+            value: Option.isSome(secret) ? textDecoder.decode(secret.value) : "",
+          });
+        }
+        identityAliases[aliasId] = {
+          ...alias,
+          extraEnv,
+        };
+      }
       return {
         ...settings,
         providerInstances: providerInstances as ServerSettings["providerInstances"],
+        identityAliases: identityAliases as ServerSettings["identityAliases"],
       };
     });
 
@@ -519,9 +573,89 @@ const make = Effect.gen(function* () {
         }
       }
 
+      const identityAliases: Record<string, IdentityAlias> = {
+        ...next.identityAliases,
+      };
+      for (const [aliasId, alias] of Object.entries(next.identityAliases)) {
+        if (!alias.extraEnv) continue;
+        const extraEnv: ProviderInstanceEnvironmentVariable[] = [];
+        for (const variable of alias.extraEnv) {
+          const secretName = identityAliasEnvironmentSecretName({ aliasId, name: variable.name });
+          if (!variable.sensitive) {
+            yield* secretStore.remove(secretName).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ServerSettingsError({
+                    settingsPath,
+                    operation: "remove-secret",
+                    environmentVariable: variable.name,
+                    cause,
+                  }),
+              ),
+            );
+            extraEnv.push(redactProviderEnvironmentVariable(variable));
+            continue;
+          }
+          nextSecretKeys.add(secretName);
+          if (!variable.valueRedacted) {
+            if (variable.value.length > 0) {
+              yield* secretStore.set(secretName, textEncoder.encode(variable.value)).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSettingsError({
+                      settingsPath,
+                      operation: "write-secret",
+                      environmentVariable: variable.name,
+                      cause,
+                    }),
+                ),
+              );
+              extraEnv.push({ ...variable, value: "", valueRedacted: true });
+            } else {
+              yield* secretStore.remove(secretName).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSettingsError({
+                      settingsPath,
+                      operation: "remove-secret",
+                      environmentVariable: variable.name,
+                      cause,
+                    }),
+                ),
+              );
+              const { valueRedacted: _omit, ...rest } = variable;
+              extraEnv.push(rest);
+            }
+            continue;
+          }
+          extraEnv.push(redactProviderEnvironmentVariable(variable));
+        }
+        identityAliases[aliasId] = { ...alias, extraEnv };
+      }
+
+      for (const [aliasId, alias] of Object.entries(current.identityAliases)) {
+        for (const variable of alias.extraEnv ?? []) {
+          if (!variable.sensitive) continue;
+          const secretName = identityAliasEnvironmentSecretName({ aliasId, name: variable.name });
+          if (nextSecretKeys.has(secretName)) continue;
+          yield* secretStore.remove(secretName).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({
+                  settingsPath,
+                  operation: "remove-stale-secret",
+                  environmentVariable: variable.name,
+                  cause,
+                }),
+            ),
+          );
+        }
+      }
+
       return {
         ...next,
         providerInstances: providerInstances as ServerSettings["providerInstances"],
+        identityAliases: identityAliases as ServerSettings["identityAliases"],
       };
     });
 

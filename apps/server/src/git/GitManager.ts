@@ -11,6 +11,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Path from "effect/Path";
+import { IdentityAliasProcessEnv } from "../identity/IdentityAliasProcessEnv.ts";
+import { pickGitAuthorEnv } from "../identity/envFor.ts";
+import { withIdentityAliasEnvForCwd } from "../identity/provideIdentityAliasGitHubCliEnv.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import {
@@ -609,6 +613,7 @@ export const make = Effect.gen(function* () {
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
+  const snapshotQuery = yield* ProjectionSnapshotQuery;
 
   const readRecentCommitSubjects = (cwd: string) =>
     gitCore
@@ -1668,9 +1673,12 @@ export const make = Effect.gen(function* () {
             },
           }
         : null;
+    const identityAliasEnv = yield* IdentityAliasProcessEnv;
+    const gitAuthorEnv = pickGitAuthorEnv(identityAliasEnv);
     const { commitSha } = yield* gitCore.commit(cwd, suggestion.subject, suggestion.body, {
       timeoutMs: COMMIT_TIMEOUT_MS,
       ...(commitProgress ? { progress: commitProgress } : {}),
+      ...(gitAuthorEnv !== undefined ? { env: gitAuthorEnv } : {}),
     });
     if (currentHookName !== null) {
       yield* emit({
@@ -2370,16 +2378,25 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const withAliasEnv =
+    (cwd: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      withIdentityAliasEnvForCwd(cwd)(effect).pipe(
+        Effect.provideService(ProjectionSnapshotQuery, snapshotQuery),
+        Effect.provideService(ServerSettings.ServerSettingsService, serverSettingsService),
+        Effect.provideService(Path.Path, path),
+      );
+
   return GitManager.of({
-    localStatus,
-    remoteStatus,
-    status,
+    localStatus: (input) => withAliasEnv(input.cwd)(localStatus(input)),
+    remoteStatus: (input, options) => withAliasEnv(input.cwd)(remoteStatus(input, options)),
+    status: (input) => withAliasEnv(input.cwd)(status(input)),
     invalidateLocalStatus,
     invalidateRemoteStatus,
     invalidateStatus,
-    resolvePullRequest,
-    preparePullRequestThread,
-    runStackedAction,
+    resolvePullRequest: (input) => withAliasEnv(input.cwd)(resolvePullRequest(input)),
+    preparePullRequestThread: (input) => withAliasEnv(input.cwd)(preparePullRequestThread(input)),
+    runStackedAction: (input, options) => withAliasEnv(input.cwd)(runStackedAction(input, options)),
   });
 });
 
