@@ -37,6 +37,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
+import { makeGrokContinuationKey, makeGrokEnvironment } from "./GrokHome.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("grok");
@@ -89,18 +90,25 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
+      const effectiveConfig = { ...config, enabled } satisfies GrokSettings;
+      const processEnv = yield* makeGrokEnvironment(
+        effectiveConfig,
+        mergeProviderInstanceEnvironment(environment),
+      );
+      const continuationKey = yield* makeGrokContinuationKey(instanceId, effectiveConfig);
+      const continuationIdentity = {
+        ...defaultProviderContinuationIdentity({
+          driverKind: DRIVER_KIND,
+          instanceId,
+        }),
+        continuationKey,
+      };
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
       });
-      const effectiveConfig = { ...config, enabled } satisfies GrokSettings;
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,

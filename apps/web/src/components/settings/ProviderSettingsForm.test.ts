@@ -20,6 +20,13 @@ describe("ProviderSettingsForm helpers", () => {
       "shadowHomePath",
       "launchArgs",
     ]);
+
+    const grok = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("grok")];
+    expect(grok).toBeDefined();
+    expect(deriveProviderSettingsFields(grok!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+    ]);
   });
 
   it("sources labels and descriptions from schema annotations", () => {

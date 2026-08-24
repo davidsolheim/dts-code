@@ -85,7 +85,8 @@ T3 Code. You can install T3 Code, open it, and add providers afterwards. A provi
 authenticated shows its status in **Settings** and fails at session start with the login command
 to run.
 
-For multi-account setups, see [Codex](./providers-codex.md) and [Claude](./providers-claude.md).
+For multi-account setups, see [Codex](./providers-codex.md), [Claude](./providers-claude.md), and
+[Grok](./providers-grok.md).
 
 ## Next Steps
 
