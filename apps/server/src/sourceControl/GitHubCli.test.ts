@@ -1,12 +1,42 @@
 import { assert, it, afterEach, describe, expect, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
+import { parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
+import * as GitHubSourceControlProvider from "./GitHubSourceControlProvider.ts";
+import { probeSourceControlProvider } from "./SourceControlProviderDiscovery.ts";
+
+const executeRunInput = (input: {
+  readonly args: ReadonlyArray<string>;
+  readonly env?: NodeJS.ProcessEnv;
+}) => ({
+  operation: "GitHubCli.execute",
+  command: "gh",
+  args: input.args,
+  cwd: "/repo",
+  timeoutMs: 30_000,
+  ...(input.env !== undefined ? { env: input.env } : {}),
+});
+
+const authHostsJson = (login: string) =>
+  JSON.stringify({
+    hosts: {
+      "github.com": [
+        {
+          state: "success",
+          active: true,
+          host: "github.com",
+          login,
+        },
+      ],
+    },
+  });
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -402,5 +432,263 @@ describe("GitHubCli.layer", () => {
       assert.strictEqual(error.cause, cause);
       assert.notInclude(error.message, "user ID");
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("forwards execute env to VcsProcess.run", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("gh version 2.83.0\n")));
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh.execute({
+        cwd: "/repo",
+        args: ["--version"],
+        env: { GH_CONFIG_DIR: "/tmp/gh-config-a" },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith(
+        executeRunInput({
+          args: ["--version"],
+          env: { GH_CONFIG_DIR: "/tmp/gh-config-a" },
+        }),
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps undefined GH_CONFIG_DIR on execute env for extendEnv overwrite", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("gh version 2.83.0\n")));
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh.execute({
+        cwd: "/repo",
+        args: ["--version"],
+        env: { GH_CONFIG_DIR: undefined },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith(
+        executeRunInput({
+          args: ["--version"],
+          env: { GH_CONFIG_DIR: undefined },
+        }),
+      );
+      const env = mockRun.mock.calls[0]?.[0]?.env;
+      expect(env).toHaveProperty("GH_CONFIG_DIR", undefined);
+      expect(env !== undefined && "GH_CONFIG_DIR" in env).toBe(true);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("forwards wrapper env to execute", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(
+        Effect.succeed(processOutput("https://github.com/octocat/codething-mvp\n")),
+      );
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh.createRepository({
+        cwd: "/repo",
+        repository: "octocat/codething-mvp",
+        visibility: "private",
+        env: { GH_CONFIG_DIR: "/tmp/gh-config-wrapper" },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith({
+        operation: "GitHubCli.execute",
+        command: "gh",
+        args: ["repo", "create", "octocat/codething-mvp", "--private"],
+        cwd: "/repo",
+        timeoutMs: 30_000,
+        env: { GH_CONFIG_DIR: "/tmp/gh-config-wrapper" },
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("forwards distinct GH_CONFIG_DIR values on execute and discovery probe", () =>
+    Effect.gen(function* () {
+      const dirA = "/tmp/gh-config-a";
+      const dirB = "/tmp/gh-config-b";
+
+      mockRun.mockImplementation((input) => {
+        if (input.args[0] === "--version") {
+          return Effect.succeed(processOutput("gh version 2.83.0\n"));
+        }
+        const configDir = input.env?.GH_CONFIG_DIR;
+        const login =
+          configDir === dirA
+            ? "alice-from-dir-a"
+            : configDir === dirB
+              ? "bob-from-dir-b"
+              : "shared-account";
+        return Effect.succeed(processOutput(authHostsJson(login)));
+      });
+
+      const gh = yield* GitHubCli.GitHubCli;
+      const authArgs = ["auth", "status", "--json", "hosts"] as const;
+      const executedA = yield* gh.execute({
+        cwd: "/repo",
+        args: authArgs,
+        env: { GH_CONFIG_DIR: dirA },
+      });
+      const executedB = yield* gh.execute({
+        cwd: "/repo",
+        args: authArgs,
+        env: { GH_CONFIG_DIR: dirB },
+      });
+
+      expect(mockRun).toHaveBeenNthCalledWith(
+        1,
+        executeRunInput({ args: authArgs, env: { GH_CONFIG_DIR: dirA } }),
+      );
+      expect(mockRun).toHaveBeenNthCalledWith(
+        2,
+        executeRunInput({ args: authArgs, env: { GH_CONFIG_DIR: dirB } }),
+      );
+      assert.deepStrictEqual(
+        parseGitHubAuthStatus(executedA.stdout).accounts.map((account) => account.account),
+        ["alice-from-dir-a"],
+      );
+      assert.deepStrictEqual(
+        parseGitHubAuthStatus(executedB.stdout).accounts.map((account) => account.account),
+        ["bob-from-dir-b"],
+      );
+
+      const process = { run: mockRun };
+      const probedA = yield* probeSourceControlProvider({
+        spec: GitHubSourceControlProvider.discovery,
+        process,
+        cwd: "/repo",
+        env: { GH_CONFIG_DIR: dirA },
+      });
+      const probedB = yield* probeSourceControlProvider({
+        spec: GitHubSourceControlProvider.discovery,
+        process,
+        cwd: "/repo",
+        env: { GH_CONFIG_DIR: dirB },
+      });
+
+      expect(mockRun).toHaveBeenNthCalledWith(3, {
+        operation: "source-control.discovery.probe",
+        command: "gh",
+        args: ["--version"],
+        cwd: "/repo",
+        timeoutMs: 5_000,
+        maxOutputBytes: 8_000,
+        appendTruncationMarker: true,
+        env: { GH_CONFIG_DIR: dirA },
+      });
+      expect(mockRun).toHaveBeenNthCalledWith(4, {
+        operation: "source-control.discovery.auth",
+        command: "gh",
+        args: authArgs,
+        cwd: "/repo",
+        allowNonZeroExit: true,
+        timeoutMs: 5_000,
+        maxOutputBytes: 8_000,
+        appendTruncationMarker: true,
+        env: { GH_CONFIG_DIR: dirA },
+      });
+      expect(mockRun).toHaveBeenNthCalledWith(5, {
+        operation: "source-control.discovery.probe",
+        command: "gh",
+        args: ["--version"],
+        cwd: "/repo",
+        timeoutMs: 5_000,
+        maxOutputBytes: 8_000,
+        appendTruncationMarker: true,
+        env: { GH_CONFIG_DIR: dirB },
+      });
+      expect(mockRun).toHaveBeenNthCalledWith(6, {
+        operation: "source-control.discovery.auth",
+        command: "gh",
+        args: authArgs,
+        cwd: "/repo",
+        allowNonZeroExit: true,
+        timeoutMs: 5_000,
+        maxOutputBytes: 8_000,
+        appendTruncationMarker: true,
+        env: { GH_CONFIG_DIR: dirB },
+      });
+
+      assert.strictEqual(probedA.auth.status, "authenticated");
+      assert.strictEqual(probedB.auth.status, "authenticated");
+      assert.deepStrictEqual(probedA.auth.account, Option.some("alice-from-dir-a"));
+      assert.deepStrictEqual(probedB.auth.account, Option.some("bob-from-dir-b"));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("merges GitHubCliProcessEnv when execute omits env", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("gh version 2.83.0\n")));
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh.execute({
+        cwd: "/repo",
+        args: ["--version"],
+      });
+
+      expect(mockRun).toHaveBeenCalledWith(
+        executeRunInput({
+          args: ["--version"],
+          env: { GH_CONFIG_DIR: "/tmp/gh-config-context" },
+        }),
+      );
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(GitHubCli.GitHubCliProcessEnv, {
+        GH_CONFIG_DIR: "/tmp/gh-config-context",
+      }),
+    ),
+  );
+
+  it.effect("lets execute env win over GitHubCliProcessEnv", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("gh version 2.83.0\n")));
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh.execute({
+        cwd: "/repo",
+        args: ["--version"],
+        env: { GH_CONFIG_DIR: "/tmp/gh-config-execute" },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith(
+        executeRunInput({
+          args: ["--version"],
+          env: { GH_CONFIG_DIR: "/tmp/gh-config-execute" },
+        }),
+      );
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(GitHubCli.GitHubCliProcessEnv, {
+        GH_CONFIG_DIR: "/tmp/gh-config-context",
+      }),
+    ),
+  );
+
+  it.effect("lets execute undefined GH_CONFIG_DIR overwrite GitHubCliProcessEnv", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(Effect.succeed(processOutput("gh version 2.83.0\n")));
+
+      const gh = yield* GitHubCli.GitHubCli;
+      yield* gh.execute({
+        cwd: "/repo",
+        args: ["--version"],
+        env: { GH_CONFIG_DIR: undefined },
+      });
+
+      expect(mockRun).toHaveBeenCalledWith(
+        executeRunInput({
+          args: ["--version"],
+          env: { GH_CONFIG_DIR: undefined },
+        }),
+      );
+      const env = mockRun.mock.calls[0]?.[0]?.env;
+      expect(env).toHaveProperty("GH_CONFIG_DIR", undefined);
+      expect(env !== undefined && "GH_CONFIG_DIR" in env).toBe(true);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(GitHubCli.GitHubCliProcessEnv, {
+        GH_CONFIG_DIR: "/tmp/gh-config-context",
+      }),
+    ),
   );
 });

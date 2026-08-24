@@ -165,10 +165,17 @@ function isCliRemoteRefinementSpec(
   return spec.type === "cli" && spec.refineUnknownRemote !== undefined;
 }
 
+function withOptionalEnv(env: NodeJS.ProcessEnv | undefined): {
+  readonly env?: NodeJS.ProcessEnv;
+} {
+  return env !== undefined ? { env } : {};
+}
+
 function probeCli(input: {
   readonly spec: SourceControlCliDiscoverySpec;
   readonly process: VcsProcess.VcsProcess["Service"];
   readonly cwd: string;
+  readonly env?: NodeJS.ProcessEnv;
 }): Effect.Effect<DiscoveryProbeResult> {
   return input.process
     .run({
@@ -179,6 +186,7 @@ function probeCli(input: {
       timeoutMs: probeTimeoutMs(input.spec),
       maxOutputBytes: 8_000,
       appendTruncationMarker: true,
+      ...withOptionalEnv(input.env),
     })
     .pipe(
       Effect.map(
@@ -213,6 +221,7 @@ export function probeSourceControlProvider(input: {
   readonly spec: SourceControlProviderDiscoverySpec;
   readonly process: VcsProcess.VcsProcess["Service"];
   readonly cwd: string;
+  readonly env?: NodeJS.ProcessEnv;
 }): Effect.Effect<SourceControlProviderDiscoveryItem> {
   if (input.spec.type === "api") {
     return input.spec.probeAuth.pipe(
@@ -237,6 +246,7 @@ export function probeSourceControlProvider(input: {
     spec,
     process: input.process,
     cwd: input.cwd,
+    ...withOptionalEnv(input.env),
   }).pipe(
     Effect.flatMap((item) => {
       if (item.status !== "available") {
@@ -256,6 +266,7 @@ export function probeSourceControlProvider(input: {
           timeoutMs: probeTimeoutMs(spec),
           maxOutputBytes: 8_000,
           appendTruncationMarker: true,
+          ...withOptionalEnv(input.env),
         })
         .pipe(
           Effect.map(
@@ -282,6 +293,7 @@ export const refineUnknownRemoteProvider = Effect.fn("refineUnknownRemoteProvide
     readonly process: VcsProcess.VcsProcess["Service"];
     readonly cwd: string;
     readonly context: SourceControlProvider.SourceControlProviderContext | null;
+    readonly env?: NodeJS.ProcessEnv;
   }): Effect.fn.Return<SourceControlProvider.SourceControlProviderContext | null> {
     if (input.context === null || input.context.provider.kind !== "unknown") {
       return input.context;
@@ -299,6 +311,7 @@ export const refineUnknownRemoteProvider = Effect.fn("refineUnknownRemoteProvide
           timeoutMs: probeTimeoutMs(spec),
           maxOutputBytes: 8_000,
           appendTruncationMarker: true,
+          ...withOptionalEnv(input.env),
         })
         .pipe(
           Effect.map((auth) =>

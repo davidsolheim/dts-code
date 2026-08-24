@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -12,8 +12,15 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
 import * as BitbucketApi from "./BitbucketApi.ts";
 import * as GitHubCli from "./GitHubCli.ts";
+import * as GitHubSourceControlProvider from "./GitHubSourceControlProvider.ts";
 import * as GitLabCli from "./GitLabCli.ts";
 import * as SourceControlDiscovery from "./SourceControlDiscovery.ts";
+import {
+  probeSourceControlProvider,
+  providerAuth,
+  refineUnknownRemoteProvider,
+  type SourceControlCliDiscoverySpec,
+} from "./SourceControlProviderDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 
 const sourceControlProviderRegistryTestLayer = (input: {
@@ -280,4 +287,113 @@ Logged in to gitlab.com as gitlab-user
       ],
     );
   }).pipe(Effect.provide(testLayer));
+});
+
+it.effect("forwards probe env to version and auth runs", () => {
+  const run = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>((input) => {
+    if (input.args[0] === "--version") {
+      return Effect.succeed(processOutput("gh version 2.83.0\n"));
+    }
+    return Effect.succeed(
+      processOutput(
+        JSON.stringify({
+          hosts: {
+            "github.com": [
+              {
+                state: "success",
+                active: true,
+                host: "github.com",
+                login: "alice-from-dir-a",
+              },
+            ],
+          },
+        }),
+      ),
+    );
+  });
+
+  return Effect.gen(function* () {
+    const result = yield* probeSourceControlProvider({
+      spec: GitHubSourceControlProvider.discovery,
+      process: { run },
+      cwd: "/repo",
+      env: { GH_CONFIG_DIR: "/tmp/gh-a" },
+    });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenNthCalledWith(1, {
+      operation: "source-control.discovery.probe",
+      command: "gh",
+      args: ["--version"],
+      cwd: "/repo",
+      timeoutMs: 5_000,
+      maxOutputBytes: 8_000,
+      appendTruncationMarker: true,
+      env: { GH_CONFIG_DIR: "/tmp/gh-a" },
+    });
+    expect(run).toHaveBeenNthCalledWith(2, {
+      operation: "source-control.discovery.auth",
+      command: "gh",
+      args: ["auth", "status", "--json", "hosts"],
+      cwd: "/repo",
+      allowNonZeroExit: true,
+      timeoutMs: 5_000,
+      maxOutputBytes: 8_000,
+      appendTruncationMarker: true,
+      env: { GH_CONFIG_DIR: "/tmp/gh-a" },
+    });
+    assert.strictEqual(result.auth.status, "authenticated");
+    assert.deepStrictEqual(result.auth.account, Option.some("alice-from-dir-a"));
+  });
+});
+
+it.effect("forwards optional env on unknown-remote refinement", () => {
+  const run = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>(() =>
+    Effect.succeed(processOutput("ok")),
+  );
+  const spec = {
+    type: "cli",
+    kind: "github",
+    label: "GitHub",
+    executable: "gh",
+    versionArgs: ["--version"],
+    authArgs: ["auth", "status", "--json", "hosts"],
+    parseAuth: () => providerAuth({ status: "unknown" }),
+    refineUnknownRemote: () => ({
+      kind: "github",
+      name: "GitHub",
+      baseUrl: "https://github.com",
+    }),
+    installHint: "Install gh.",
+  } satisfies SourceControlCliDiscoverySpec;
+
+  return Effect.gen(function* () {
+    yield* refineUnknownRemoteProvider({
+      specs: [spec],
+      process: { run },
+      cwd: "/repo",
+      context: {
+        provider: {
+          kind: "unknown",
+          name: "example.test",
+          baseUrl: "https://example.test",
+        },
+        remoteName: "origin",
+        remoteUrl: "https://example.test/owner/repo.git",
+      },
+      env: { GH_CONFIG_DIR: "/tmp/gh-a" },
+    });
+
+    expect(run).toHaveBeenCalledWith({
+      operation: "source-control.discovery.refine-unknown-remote",
+      command: "gh",
+      args: ["auth", "status", "--json", "hosts"],
+      cwd: "/repo",
+      allowNonZeroExit: true,
+      timeoutMs: 5_000,
+      maxOutputBytes: 8_000,
+      appendTruncationMarker: true,
+      env: { GH_CONFIG_DIR: "/tmp/gh-a" },
+    });
+  });
 });

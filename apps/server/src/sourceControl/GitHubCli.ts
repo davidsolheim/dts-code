@@ -19,6 +19,33 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * Optional spawn env for Live `execute` (for example `GH_CONFIG_DIR`).
+ * Wrappers may forward `env` into `execute`. Live `execute` also merges this
+ * context so GitHubPullRequestCli need not thread env; call-site env wins.
+ */
+export class GitHubCliProcessEnv extends Context.Reference<NodeJS.ProcessEnv | undefined>(
+  "t3/sourceControl/GitHubCliProcessEnv",
+  { defaultValue: () => undefined },
+) {}
+
+function mergeGitHubCliEnv(
+  contextEnv: NodeJS.ProcessEnv | undefined,
+  executeEnv: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv | undefined {
+  if (contextEnv === undefined && executeEnv === undefined) {
+    return undefined;
+  }
+  // Spread so an explicit `undefined` value overwrites (extendEnv merge).
+  return { ...contextEnv, ...executeEnv };
+}
+
+function withOptionalEnv(env: NodeJS.ProcessEnv | undefined): {
+  readonly env?: NodeJS.ProcessEnv;
+} {
+  return env !== undefined ? { env } : {};
+}
+
 const gitHubCliFailureFields = {
   command: Schema.Literal("gh"),
   cwd: Schema.String,
@@ -223,28 +250,33 @@ export class GitHubCli extends Context.Service<
       /** Piped to the child's stdin, for payloads that must never appear in argv. */
       readonly stdin?: string;
       readonly maxOutputBytes?: number;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<VcsProcess.VcsProcessOutput, GitHubCliError>;
 
     readonly listOpenPullRequests: (input: {
       readonly cwd: string;
       readonly headSelector: string;
       readonly limit?: number;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<ReadonlyArray<GitHubPullRequestSummary>, GitHubCliError>;
 
     readonly getPullRequest: (input: {
       readonly cwd: string;
       readonly reference: string;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<GitHubPullRequestSummary, GitHubCliError>;
 
     readonly getRepositoryCloneUrls: (input: {
       readonly cwd: string;
       readonly repository: string;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<GitHubRepositoryCloneUrls, GitHubCliError>;
 
     readonly createRepository: (input: {
       readonly cwd: string;
       readonly repository: string;
       readonly visibility: SourceControlRepositoryVisibility;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<GitHubRepositoryCloneUrls, GitHubCliError>;
 
     readonly createPullRequest: (input: {
@@ -253,16 +285,19 @@ export class GitHubCli extends Context.Service<
       readonly headSelector: string;
       readonly title: string;
       readonly bodyFile: string;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<void, GitHubCliError>;
 
     readonly getDefaultBranch: (input: {
       readonly cwd: string;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<string | null, GitHubCliError>;
 
     readonly checkoutPullRequest: (input: {
       readonly cwd: string;
       readonly reference: string;
       readonly force?: boolean;
+      readonly env?: NodeJS.ProcessEnv;
     }) => Effect.Effect<void, GitHubCliError>;
   }
 >()("t3/sourceControl/GitHubCli") {}
@@ -327,23 +362,29 @@ export const make = Effect.gen(function* () {
   const process = yield* VcsProcess.VcsProcess;
 
   const execute: GitHubCli["Service"]["execute"] = (input) =>
-    process
-      .run({
-        operation: "GitHubCli.execute",
-        command: "gh",
-        args: input.args,
-        cwd: input.cwd,
-        timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        ...(input.stdin !== undefined ? { stdin: input.stdin } : {}),
-        ...(input.maxOutputBytes !== undefined ? { maxOutputBytes: input.maxOutputBytes } : {}),
-      })
-      .pipe(Effect.mapError((error) => fromVcsError({ command: "gh", cwd: input.cwd }, error)));
+    Effect.gen(function* () {
+      const contextEnv = yield* GitHubCliProcessEnv;
+      const env = mergeGitHubCliEnv(contextEnv, input.env);
+      return yield* process
+        .run({
+          operation: "GitHubCli.execute",
+          command: "gh",
+          args: input.args,
+          cwd: input.cwd,
+          timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          ...(input.stdin !== undefined ? { stdin: input.stdin } : {}),
+          ...(input.maxOutputBytes !== undefined ? { maxOutputBytes: input.maxOutputBytes } : {}),
+          ...withOptionalEnv(env),
+        })
+        .pipe(Effect.mapError((error) => fromVcsError({ command: "gh", cwd: input.cwd }, error)));
+    });
 
   return GitHubCli.of({
     execute,
     listOpenPullRequests: (input) =>
       execute({
         cwd: input.cwd,
+        ...withOptionalEnv(input.env),
         args: [
           "pr",
           "list",
@@ -383,6 +424,7 @@ export const make = Effect.gen(function* () {
     getPullRequest: (input) =>
       execute({
         cwd: input.cwd,
+        ...withOptionalEnv(input.env),
         args: [
           "pr",
           "view",
@@ -415,6 +457,7 @@ export const make = Effect.gen(function* () {
     getRepositoryCloneUrls: (input) =>
       execute({
         cwd: input.cwd,
+        ...withOptionalEnv(input.env),
         args: ["repo", "view", input.repository, "--json", "nameWithOwner,url,sshUrl"],
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
@@ -435,6 +478,7 @@ export const make = Effect.gen(function* () {
     createRepository: (input) =>
       execute({
         cwd: input.cwd,
+        ...withOptionalEnv(input.env),
         args: ["repo", "create", input.repository, `--${input.visibility}`],
       }).pipe(
         Effect.map((result) =>
@@ -444,6 +488,7 @@ export const make = Effect.gen(function* () {
     createPullRequest: (input) =>
       execute({
         cwd: input.cwd,
+        ...withOptionalEnv(input.env),
         args: [
           "pr",
           "create",
@@ -460,6 +505,7 @@ export const make = Effect.gen(function* () {
     getDefaultBranch: (input) =>
       execute({
         cwd: input.cwd,
+        ...withOptionalEnv(input.env),
         args: ["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
       }).pipe(
         Effect.map((value) => {
@@ -470,6 +516,7 @@ export const make = Effect.gen(function* () {
     checkoutPullRequest: (input) =>
       execute({
         cwd: input.cwd,
+        ...withOptionalEnv(input.env),
         args: ["pr", "checkout", input.reference, ...(input.force ? ["--force"] : [])],
       }).pipe(Effect.asVoid),
   });
