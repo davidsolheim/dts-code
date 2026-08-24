@@ -8,6 +8,7 @@
  */
 import {
   DEFAULT_TERMINAL_ID,
+  ThreadId,
   TerminalCwdError,
   TerminalCwdNotDirectoryError,
   TerminalCwdNotFoundError,
@@ -57,6 +58,9 @@ import {
   terminalRestartsTotal,
   terminalSessionsTotal,
 } from "../observability/Metrics.ts";
+import { isIdentitySpawnEnvKey, overlayIdentityAliasSpawnEnv } from "../identity/envFor.ts";
+import { resolveIdentityAliasEnvFromBinding } from "../identity/resolveIdentityAliasEnv.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
@@ -263,6 +267,7 @@ export interface TerminalSessionState {
   /** Normalized child command name when `hasRunningSubprocess`; cleared when idle. */
   childCommandLabel: string | null;
   runtimeEnv: Record<string, string> | null;
+  identityEnvFingerprint: string | null;
 }
 
 interface PersistHistoryRequest {
@@ -1093,10 +1098,18 @@ function createTerminalSpawnEnv(
   }
   if (runtimeEnv) {
     for (const [key, value] of Object.entries(runtimeEnv)) {
+      if (isIdentitySpawnEnvKey(key)) continue;
       spawnEnv[key] = value;
     }
   }
   return stripAppImageRuntimeEnv(spawnEnv);
+}
+
+function identityEnvFingerprint(env: NodeJS.ProcessEnv | undefined): string | null {
+  if (env === undefined) return null;
+  return JSON.stringify(
+    Object.entries(env).toSorted(([left], [right]) => left.localeCompare(right)),
+  );
 }
 
 function normalizedRuntimeEnv(
@@ -1127,17 +1140,33 @@ interface TerminalManagerOptions {
     readonly threadId: string;
     readonly terminalId: string;
   }) => Effect.Effect<void>;
+  resolveThreadIdentityEnv?: (
+    threadId: string,
+  ) => Effect.Effect<NodeJS.ProcessEnv | undefined, unknown>;
 }
 
 export const make = Effect.fn("TerminalManager.make")(function* () {
   const { terminalLogsDir } = yield* ServerConfig.ServerConfig;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
   const portDiscovery = yield* PortScanner.PortDiscovery;
+  const snapshotQuery = yield* ProjectionSnapshotQuery;
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
     ptyAdapter,
     registerTerminalProcesses: portDiscovery.registerTerminalProcesses,
     unregisterTerminal: portDiscovery.unregisterTerminal,
+    resolveThreadIdentityEnv: (threadId) =>
+      snapshotQuery.getThreadShellById(ThreadId.make(threadId)).pipe(
+        Effect.flatMap((thread) =>
+          resolveIdentityAliasEnvFromBinding(
+            Option.match(thread, {
+              onNone: () => undefined,
+              onSome: (shell) => shell.aliasId,
+            }),
+          ),
+        ),
+        Effect.catch(() => Effect.succeed({ GH_CONFIG_DIR: "" })),
+      ),
   });
 });
 
@@ -1157,6 +1186,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   // things like PSModulePath, DISPLAY, proxies, and toolchain variables.
   // `options.env` is the test seam.
   const baseEnv = options.env ?? process.env;
+  const resolveThreadIdentityEnv = (threadId: string) =>
+    (options.resolveThreadIdentityEnv ?? ((_id: string) => Effect.succeed(undefined)))(
+      threadId,
+    ).pipe(Effect.catch(() => Effect.succeed({ GH_CONFIG_DIR: "" })));
   const shellResolver = options.shellResolver ?? (() => defaultShellResolver(platform, baseEnv));
   const processRunner = yield* ProcessRunner.ProcessRunner;
   // One process-table snapshot per poll tick, shared across every terminal.
@@ -1868,7 +1901,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         Effect.andThen(
           Effect.gen(function* () {
             const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
-            const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv);
+            const identityEnv = yield* resolveThreadIdentityEnv(session.threadId);
+            session.identityEnvFingerprint = identityEnvFingerprint(identityEnv);
+            const terminalEnv = overlayIdentityAliasSpawnEnv(
+              createTerminalSpawnEnv(baseEnv, session.runtimeEnv),
+              identityEnv,
+            );
             const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
@@ -2177,6 +2215,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         hasRunningSubprocess: false,
         childCommandLabel: null,
         runtimeEnv: normalizedRuntimeEnv(input.env),
+        identityEnvFingerprint: null,
       };
 
       const createdSession = session;
@@ -2206,6 +2245,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const liveSession = existing.value;
     const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
     const currentRuntimeEnv = liveSession.runtimeEnv;
+    const identityEnv = yield* resolveThreadIdentityEnv(input.threadId);
+    const nextIdentityFingerprint = identityEnvFingerprint(identityEnv);
     const targetCols = input.cols ?? liveSession.cols;
     const targetRows = input.rows ?? liveSession.rows;
     const runtimeEnvChanged = !Equal.equals(currentRuntimeEnv, nextRuntimeEnv);
@@ -2214,7 +2255,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const launchContextChanged =
       liveSession.cwd !== input.cwd ||
       runtimeEnvChanged ||
-      liveSession.worktreePath !== nextWorktreePath;
+      liveSession.worktreePath !== nextWorktreePath ||
+      liveSession.identityEnvFingerprint !== nextIdentityFingerprint;
 
     if (launchContextChanged) {
       yield* stopProcess(liveSession);
@@ -2589,6 +2631,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             hasRunningSubprocess: false,
             childCommandLabel: null,
             runtimeEnv: normalizedRuntimeEnv(input.env),
+            identityEnvFingerprint: null,
           };
           const createdSession = session;
           yield* modifyManagerState((state) => {

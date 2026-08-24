@@ -12,11 +12,58 @@ export const GIT_AUTHOR_ENV_KEYS = [
   "GIT_COMMITTER_EMAIL",
 ] as const;
 
+export const IDENTITY_SPAWN_ENV_KEYS = [
+  "GROK_HOME",
+  "GH_CONFIG_DIR",
+  ...GIT_AUTHOR_ENV_KEYS,
+] as const;
+
+export function isIdentitySpawnEnvKey(key: string): boolean {
+  return (IDENTITY_SPAWN_ENV_KEYS as readonly string[]).includes(key);
+}
+
 export function overlayProcessEnv(
   base: NodeJS.ProcessEnv,
   overlay: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   return { ...base, ...overlay };
+}
+
+const IDENTITY_SPAWN_ISOLATION_KEYS = ["GROK_HOME", "GH_CONFIG_DIR"] as const;
+
+/**
+ * Overlay alias env onto a fully specified spawn env (PTY).
+ *
+ * `GROK_HOME` / `GH_CONFIG_DIR` are always written (`""` when omitted) so the
+ * child cannot inherit host identity dirs. Git author keys are only written
+ * when the overlay set them — an empty `GIT_AUTHOR_NAME` overrides gitconfig
+ * and breaks `git commit`.
+ */
+export function overlayIdentityAliasSpawnEnv(
+  base: NodeJS.ProcessEnv,
+  overlay: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv {
+  if (overlay === undefined) {
+    return base;
+  }
+  const next: NodeJS.ProcessEnv = { ...base };
+  for (const key of IDENTITY_SPAWN_ISOLATION_KEYS) {
+    const value = overlay[key];
+    next[key] = value === undefined ? "" : value;
+  }
+  for (const key of GIT_AUTHOR_ENV_KEYS) {
+    const value = overlay[key];
+    if (value === undefined) {
+      delete next[key];
+    } else {
+      next[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(overlay)) {
+    if (isIdentitySpawnEnvKey(key)) continue;
+    next[key] = value === undefined ? "" : value;
+  }
+  return next;
 }
 
 export function pickGitAuthorEnv(

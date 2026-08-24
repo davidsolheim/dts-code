@@ -18,6 +18,7 @@ import { AppText as Text } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { ProviderIcon } from "../../components/ProviderIcon";
+import { IdentityAliasBadge } from "../../components/IdentityAliasBadge";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -322,6 +323,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly project: EnvironmentProject | null;
   readonly projectTitle?: string;
   readonly providerDriver: string | null;
+  readonly identityAlias?: { readonly displayName: string; readonly accentColor?: string } | null;
   /** Which machine hosts the thread. Null when only one environment is
       connected — repeating the same label on every row is noise. Mirrors
       the web sidebar's remote-environment cloud icon, but as text since
@@ -783,6 +785,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           >
             #{pr.label}
           </Text>
+        ) : null}
+        {props.identityAlias ? (
+          <IdentityAliasBadge
+            displayName={props.identityAlias.displayName}
+            accentColor={props.identityAlias.accentColor}
+            size={14}
+          />
         ) : null}
         {props.providerDriver ? (
           <View className="opacity-60">

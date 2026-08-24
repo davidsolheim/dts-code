@@ -4,7 +4,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { VcsProcessSpawnError } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, IdentityAlias, VcsProcessSpawnError } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -22,10 +24,27 @@ import {
   type SourceControlCliDiscoverySpec,
 } from "./SourceControlProviderDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+
+const unusedServerSettingsLayer = (
+  identityAliases: typeof DEFAULT_SERVER_SETTINGS.identityAliases,
+) =>
+  Layer.succeed(
+    ServerSettingsService,
+    ServerSettingsService.of({
+      start: Effect.void,
+      ready: Effect.void,
+      getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, identityAliases }),
+      updateSettings: () => Effect.die(new Error("unused")),
+      streamChanges: Stream.empty,
+      subscribeChanges: Effect.succeed(Stream.empty),
+    }),
+  );
 
 const sourceControlProviderRegistryTestLayer = (input: {
   readonly bitbucket: Partial<BitbucketApi.BitbucketApi["Service"]>;
   readonly process: Partial<VcsProcess.VcsProcess["Service"]>;
+  readonly identityAliases?: typeof DEFAULT_SERVER_SETTINGS.identityAliases;
 }) =>
   SourceControlProviderRegistry.layer.pipe(
     Layer.provide(
@@ -39,6 +58,7 @@ const sourceControlProviderRegistryTestLayer = (input: {
         Layer.mock(GitLabCli.GitLabCli)({}),
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
         Layer.mock(VcsProcess.VcsProcess)(input.process),
+        unusedServerSettingsLayer(input.identityAliases ?? {}),
       ),
     ),
   );
@@ -396,4 +416,167 @@ it.effect("forwards optional env on unknown-remote refinement", () => {
       env: { GH_CONFIG_DIR: "/tmp/gh-a" },
     });
   });
+});
+
+it.effect("probes GitHub auth per identity alias GH_CONFIG_DIR plus the unbound default", () => {
+  const processMock = {
+    run: (input: VcsProcess.VcsProcessInput) => {
+      if (input.command === "git") {
+        return Effect.succeed(processOutput("git version 2.51.0\n"));
+      }
+      if (input.command === "gh" && input.args[0] === "--version") {
+        return Effect.succeed(processOutput("gh version 2.83.0\n"));
+      }
+      if (input.command === "gh" && input.args.join(" ") === "auth status --json hosts") {
+        const login =
+          input.env?.GH_CONFIG_DIR === "/tmp/alias-gh-work" ? "work-user" : "default-user";
+        return Effect.succeed(
+          processOutput(
+            JSON.stringify({
+              hosts: {
+                "github.com": [
+                  {
+                    state: "success",
+                    active: true,
+                    host: "github.com",
+                    login,
+                    tokenSource: "keyring",
+                  },
+                ],
+              },
+            }),
+          ),
+        );
+      }
+      return Effect.fail(
+        new VcsProcessSpawnError({
+          operation: input.operation,
+          command: input.command,
+          cwd: input.cwd,
+          cause: new Error(`${input.command} not found`),
+        }),
+      );
+    },
+  } satisfies Partial<VcsProcess.VcsProcess["Service"]>;
+
+  const workAlias = Schema.decodeUnknownSync(IdentityAlias)({
+    id: "work",
+    displayName: "Work",
+    ghConfigDir: "/tmp/alias-gh-work",
+  });
+
+  const testLayer = SourceControlDiscovery.layer.pipe(
+    Layer.provide(
+      ServerConfig.layerTest(process.cwd(), {
+        prefix: "t3-source-control-alias-discovery-",
+      }),
+    ),
+    Layer.provide(Layer.mock(VcsProcess.VcsProcess)(processMock)),
+    Layer.provide(
+      sourceControlProviderRegistryTestLayer({
+        process: processMock,
+        bitbucket: {
+          probeAuth: Effect.succeed({
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.some("bitbucket.org"),
+            detail: Option.none(),
+          }),
+        },
+        identityAliases: { work: workAlias },
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const discovery = yield* SourceControlDiscovery.SourceControlDiscovery;
+    const result = yield* discovery.discover;
+    const githubRows = result.sourceControlProviders.filter((item) => item.kind === "github");
+    expect(githubRows).toHaveLength(2);
+    expect(githubRows[0]?.identityAliasId).toBeUndefined();
+    expect(githubRows[0]?.auth.account).toEqual(Option.some("default-user"));
+    expect(githubRows[1]?.identityAliasId).toBe("work");
+    expect(githubRows[1]?.identityAliasDisplayName).toBe("Work");
+    expect(githubRows[1]?.auth.account).toEqual(Option.some("work-user"));
+  }).pipe(Effect.provide(testLayer));
+});
+
+it.effect("skips alias GitHub probes when GH_CONFIG_DIR is empty", () => {
+  const processMock = {
+    run: (input: VcsProcess.VcsProcessInput) => {
+      if (input.command === "git") {
+        return Effect.succeed(processOutput("git version 2.51.0\n"));
+      }
+      if (input.command === "gh" && input.args[0] === "--version") {
+        return Effect.succeed(processOutput("gh version 2.83.0\n"));
+      }
+      if (input.command === "gh" && input.args.join(" ") === "auth status --json hosts") {
+        return Effect.succeed(
+          processOutput(
+            JSON.stringify({
+              hosts: {
+                "github.com": [
+                  {
+                    state: "success",
+                    active: true,
+                    host: "github.com",
+                    login: "default-user",
+                    tokenSource: "keyring",
+                  },
+                ],
+              },
+            }),
+          ),
+        );
+      }
+      return Effect.fail(
+        new VcsProcessSpawnError({
+          operation: input.operation,
+          command: input.command,
+          cwd: input.cwd,
+          cause: new Error(`${input.command} not found`),
+        }),
+      );
+    },
+  } satisfies Partial<VcsProcess.VcsProcess["Service"]>;
+
+  const emptyHomeAlias = Schema.decodeUnknownSync(IdentityAlias)({
+    id: "personal",
+    displayName: "Personal",
+    ghConfigDir: "",
+  });
+
+  const testLayer = SourceControlDiscovery.layer.pipe(
+    Layer.provide(
+      ServerConfig.layerTest(process.cwd(), {
+        prefix: "t3-source-control-empty-alias-discovery-",
+      }),
+    ),
+    Layer.provide(Layer.mock(VcsProcess.VcsProcess)(processMock)),
+    Layer.provide(
+      sourceControlProviderRegistryTestLayer({
+        process: processMock,
+        bitbucket: {
+          probeAuth: Effect.succeed({
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.some("bitbucket.org"),
+            detail: Option.none(),
+          }),
+        },
+        identityAliases: { personal: emptyHomeAlias },
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const discovery = yield* SourceControlDiscovery.SourceControlDiscovery;
+    const result = yield* discovery.discover;
+    const githubRows = result.sourceControlProviders.filter((item) => item.kind === "github");
+    expect(githubRows).toHaveLength(1);
+    expect(githubRows[0]?.identityAliasId).toBeUndefined();
+    expect(githubRows[0]?.auth.account).toEqual(Option.some("default-user"));
+  }).pipe(Effect.provide(testLayer));
 });

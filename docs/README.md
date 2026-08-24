@@ -12,6 +12,7 @@
 - [Remote access](./user/remote-access.md)
 - [Keeping app and server in sync](./user/updating.md)
 - [Source control integrations](./user/source-control.md)
+- [Identity aliases](./user/identity-aliases.md)
 - [Background service (Linux)](./user/background-service.md)
 - Providers: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) ·
   [Grok](./user/providers-grok.md)

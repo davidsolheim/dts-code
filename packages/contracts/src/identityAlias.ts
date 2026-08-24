@@ -50,3 +50,23 @@ export const IdentityAliasMap = Schema.Record(IdentityAliasId, IdentityAlias).ch
   }),
 );
 export type IdentityAliasMap = typeof IdentityAliasMap.Type;
+
+function identityAliasResolvedGrokHome(
+  alias: Pick<IdentityAlias, "grokHome" | "extraEnv"> | null | undefined,
+): string {
+  const extras = alias?.extraEnv ?? [];
+  for (let index = extras.length - 1; index >= 0; index -= 1) {
+    if (extras[index]?.name === "GROK_HOME") {
+      return extras[index]?.value.trim() ?? "";
+    }
+  }
+  return alias?.grokHome.trim() ?? "";
+}
+
+/** True when switching aliases would change Grok continuation (`GROK_HOME`). */
+export function identityAliasGrokHomeChanged(
+  from: Pick<IdentityAlias, "grokHome" | "extraEnv"> | null | undefined,
+  to: Pick<IdentityAlias, "grokHome" | "extraEnv"> | null | undefined,
+): boolean {
+  return identityAliasResolvedGrokHome(from) !== identityAliasResolvedGrokHome(to);
+}

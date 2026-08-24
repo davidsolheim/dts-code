@@ -72,6 +72,7 @@ import {
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import { IdentityAliasesSection } from "./IdentityAliasSettings";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
@@ -894,6 +895,10 @@ export function EnvironmentProviderSettings({
             );
           })}
         </div>
+      </SettingsSection>
+
+      <SettingsSection {...searchableSetting("identity-aliases")}>
+        <IdentityAliasesSection environmentId={environmentId} readOnly={readOnly} />
       </SettingsSection>
 
       {isAddInstanceDialogOpen ? (

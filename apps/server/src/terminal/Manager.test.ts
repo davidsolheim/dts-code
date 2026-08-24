@@ -205,6 +205,9 @@ const multiTerminalHistoryLogPath = (
 interface CreateManagerOptions {
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
+  resolveThreadIdentityEnv?: (
+    threadId: string,
+  ) => Effect.Effect<NodeJS.ProcessEnv | undefined, unknown>;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
     readonly hasRunningSubprocess: boolean;
     readonly childCommand: string | null;
@@ -245,6 +248,9 @@ const createManager = (
         ptyAdapter,
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.resolveThreadIdentityEnv !== undefined
+          ? { resolveThreadIdentityEnv: options.resolveThreadIdentityEnv }
+          : {}),
         ...(options.subprocessInspector !== undefined
           ? { subprocessInspector: options.subprocessInspector }
           : {}),
@@ -1506,6 +1512,93 @@ it.layer(
       // Arbitrary host env vars must pass through — terminals inherit the
       // user's environment apart from the explicit blocklist.
       expect(spawnInput.env.TEST_TERMINAL_KEEP).toBe("keep-me");
+    }),
+  );
+
+  it.effect("overlays server identity alias env after client runtimeEnv", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: {
+          PATH: "/bin",
+          GH_CONFIG_DIR: "/host-gh",
+          GROK_HOME: "/host-grok",
+        },
+        resolveThreadIdentityEnv: () =>
+          Effect.succeed({
+            GH_CONFIG_DIR: "/alias-gh",
+            GROK_HOME: "/alias-grok",
+            GIT_AUTHOR_NAME: "Work Bot",
+          }),
+      });
+      yield* manager.open(
+        openInput({
+          env: { GROK_HOME: "/client-grok", CUSTOM: "from-client" },
+        }),
+      );
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput?.env.GROK_HOME).toBe("/alias-grok");
+      expect(spawnInput?.env.GH_CONFIG_DIR).toBe("/alias-gh");
+      expect(spawnInput?.env.GIT_AUTHOR_NAME).toBe("Work Bot");
+      expect(spawnInput?.env.CUSTOM).toBe("from-client");
+    }),
+  );
+
+  it.effect("omits git author env on the PTY when the alias has no gitAuthor", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: {
+          PATH: "/bin",
+          GH_CONFIG_DIR: "/host-gh",
+          GIT_AUTHOR_NAME: "Host User",
+          GIT_AUTHOR_EMAIL: "host@example.com",
+        },
+        resolveThreadIdentityEnv: () => Effect.succeed({ GH_CONFIG_DIR: "/alias-gh" }),
+      });
+      yield* manager.open(openInput());
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput?.env.GH_CONFIG_DIR).toBe("/alias-gh");
+      expect(spawnInput?.env.GROK_HOME).toBe("");
+      expect(spawnInput?.env.GIT_AUTHOR_NAME).toBeUndefined();
+      expect(spawnInput?.env.GIT_AUTHOR_EMAIL).toBeUndefined();
+      expect("GIT_AUTHOR_NAME" in (spawnInput?.env ?? {})).toBe(false);
+    }),
+  );
+
+  it.effect("does not let client runtimeEnv GROK_HOME survive an alias that omits it", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { PATH: "/bin", GROK_HOME: "/host-grok" },
+        resolveThreadIdentityEnv: () => Effect.succeed({ GH_CONFIG_DIR: undefined }),
+      });
+      yield* manager.open(
+        openInput({
+          env: { GROK_HOME: "/client-grok" },
+        }),
+      );
+      expect(ptyAdapter.spawnInputs[0]?.env.GROK_HOME).toBe("");
+      expect(ptyAdapter.spawnInputs[0]?.env.GH_CONFIG_DIR).toBe("");
+    }),
+  );
+
+  it.effect("fail-closes GH_CONFIG_DIR when identity env lookup fails", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { PATH: "/bin", GH_CONFIG_DIR: "/host-gh" },
+        resolveThreadIdentityEnv: () => Effect.fail(new Error("snapshot unavailable")),
+      });
+      yield* manager.open(openInput());
+      expect(ptyAdapter.spawnInputs[0]?.env.GH_CONFIG_DIR).toBe("");
+    }),
+  );
+
+  it.effect("fail-closes GH_CONFIG_DIR on the PTY when alias env unsets it", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { PATH: "/bin", GH_CONFIG_DIR: "/host-gh" },
+        resolveThreadIdentityEnv: () => Effect.succeed({ GH_CONFIG_DIR: undefined }),
+      });
+      yield* manager.open(openInput());
+      expect(ptyAdapter.spawnInputs[0]?.env.GH_CONFIG_DIR).toBe("");
     }),
   );
 

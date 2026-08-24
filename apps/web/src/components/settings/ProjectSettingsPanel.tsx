@@ -14,6 +14,7 @@ import {
 } from "../../logicalProject";
 import type {
   ContextMenuItem,
+  IdentityAliasId,
   ModelSelection,
   ProviderDriverKind,
   SidebarProjectGroupingMode,
@@ -71,6 +72,8 @@ import { projectEnvironment } from "../../state/projects";
 import { primaryServerProvidersAtom, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { IdentityAliasIcon } from "../chat/IdentityAliasIcon";
+import { listIdentityAliases, shouldShowIdentityAliasControl } from "../../identityAliases";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
@@ -361,6 +364,7 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
         title: string;
         defaultModelSelection: ModelSelection | null;
         defaultThreadEnvMode: ThreadEnvMode | null;
+        defaultAliasId: IdentityAliasId | null;
         faviconPath: string | null;
       }>,
       failureTitle: string,
@@ -424,6 +428,16 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
   const setDefaultModel = useCallback(
     (selection: ModelSelection | null) =>
       void updateAllMembers({ defaultModelSelection: selection }, "Failed to update default model"),
+    [updateAllMembers],
+  );
+  const storedAliasId = representative.defaultAliasId ?? null;
+  const identityAliases = useMemo(
+    () => listIdentityAliases(settings.identityAliases),
+    [settings.identityAliases],
+  );
+  const setDefaultAliasId = useCallback(
+    (aliasId: IdentityAliasId | null) =>
+      void updateAllMembers({ defaultAliasId: aliasId }, "Failed to update default identity alias"),
     [updateAllMembers],
   );
 
@@ -860,6 +874,69 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
                 </div>
               ) : (
                 <span className="text-sm text-muted-foreground">No providers available</span>
+              )
+            }
+          />
+          <SettingsRow
+            title="Identity alias"
+            description="New threads in this project start with this identity. Applies to every checkout in this group. Login stays on the server."
+            resetAction={
+              storedAliasId !== null ? (
+                <SettingResetButton
+                  label="project default identity alias"
+                  onClick={() => setDefaultAliasId(null)}
+                />
+              ) : null
+            }
+            control={
+              !shouldShowIdentityAliasControl({
+                aliasCount: identityAliases.length,
+                boundAliasId: storedAliasId,
+              }) ? (
+                <span className="text-sm text-muted-foreground">
+                  Add an identity alias in Settings → Providers
+                </span>
+              ) : (
+                <Select
+                  value={
+                    storedAliasId === null
+                      ? "none"
+                      : identityAliases.some((alias) => alias.id === storedAliasId)
+                        ? storedAliasId
+                        : "unknown"
+                  }
+                  onValueChange={(value) => {
+                    if (value === "unknown") return;
+                    setDefaultAliasId(value === "none" ? null : (value as IdentityAliasId));
+                  }}
+                >
+                  <SelectTrigger aria-label="New-thread identity alias">
+                    <SelectValue>
+                      {storedAliasId === null
+                        ? "None"
+                        : (identityAliases.find((alias) => alias.id === storedAliasId)
+                            ?.displayName ?? "Unknown alias")}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    {storedAliasId !== null &&
+                    !identityAliases.some((alias) => alias.id === storedAliasId) ? (
+                      <SelectItem value="unknown">Unknown alias</SelectItem>
+                    ) : null}
+                    <SelectItem value="none">None</SelectItem>
+                    {identityAliases.map((alias) => (
+                      <SelectItem key={alias.id} value={alias.id}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <IdentityAliasIcon
+                            displayName={alias.displayName}
+                            accentColor={alias.accentColor}
+                          />
+                          <span className="min-w-0 truncate">{alias.displayName}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
               )
             }
           />

@@ -204,6 +204,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/providers",
   },
   {
+    id: "identity-aliases",
+    title: "Identity aliases",
+    to: "/settings/providers",
+  },
+  {
     id: "agent-browser-access",
     title: "Agent browser access",
     to: "/settings/integrations",

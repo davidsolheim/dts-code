@@ -824,6 +824,16 @@ export function HomeScreen(props: HomeScreenProps) {
                   (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId),
               )?.driver ?? null
           }
+          identityAlias={(() => {
+            const aliasId = thread.aliasId;
+            if (aliasId === undefined || aliasId === null) return null;
+            const alias = serverConfigs.get(thread.environmentId)?.settings.identityAliases?.[
+              aliasId
+            ];
+            return alias
+              ? { displayName: alias.displayName, accentColor: alias.accentColor }
+              : null;
+          })()}
           environmentLabel={
             Object.keys(props.savedConnectionsById).length > 1
               ? (props.savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)

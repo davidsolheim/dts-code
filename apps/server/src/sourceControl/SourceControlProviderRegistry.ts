@@ -22,6 +22,8 @@ import {
   type SourceControlProviderDiscoverySpec,
 } from "./SourceControlProviderDiscovery.ts";
 import { ServerConfig } from "../config.ts";
+import { envFor } from "../identity/envFor.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import * as GitHubCli from "./GitHubCli.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -218,6 +220,7 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
     const config = yield* ServerConfig;
     const process = yield* VcsProcess.VcsProcess;
     const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
+    const settingsService = yield* ServerSettingsService;
     const providers = new Map<
       SourceControlProviderKind,
       SourceControlProvider.SourceControlProvider["Service"]
@@ -307,17 +310,42 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
       resolve: (input) => resolveHandle(input).pipe(Effect.map((handle) => handle.provider)),
       discover: Effect.gen(function* () {
         const githubEnv = yield* GitHubCli.GitHubCliProcessEnv;
-        return yield* Effect.all(
-          discoverySpecs.map((spec) =>
-            probeSourceControlProvider({
-              spec,
-              process,
-              cwd: config.cwd,
-              ...(githubEnv !== undefined ? { env: githubEnv } : {}),
-            }),
-          ),
-          { concurrency: "unbounded" },
-        );
+        const current = yield* settingsService.getSettings;
+        const aliases = Object.values(current.identityAliases);
+
+        const probes = discoverySpecs.flatMap((spec) => {
+          const defaultProbe = probeSourceControlProvider({
+            spec,
+            process,
+            cwd: config.cwd,
+            ...(githubEnv !== undefined ? { env: githubEnv } : {}),
+          });
+          if (spec.kind !== "github" || aliases.length === 0) {
+            return [defaultProbe];
+          }
+          const aliasProbes = aliases
+            .filter((alias) => alias.ghConfigDir.trim().length > 0)
+            .map((alias) =>
+              envFor(alias).pipe(
+                Effect.flatMap((aliasEnv) =>
+                  probeSourceControlProvider({
+                    spec,
+                    process,
+                    cwd: config.cwd,
+                    env: aliasEnv,
+                  }),
+                ),
+                Effect.map((item) => ({
+                  ...item,
+                  identityAliasId: alias.id,
+                  identityAliasDisplayName: alias.displayName,
+                })),
+              ),
+            );
+          return [defaultProbe, ...aliasProbes];
+        });
+
+        return yield* Effect.all(probes, { concurrency: "unbounded" });
       }),
     });
   },
